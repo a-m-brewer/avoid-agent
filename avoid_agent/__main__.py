@@ -140,11 +140,9 @@ def run_tool(name, tool_input):
 def gather_initial_context():
     cwd = os.getcwd()
     git_status = subprocess.run("git status --short", shell=True, capture_output=True, text=True, cwd=cwd)
+    git_output = git_status.stdout.strip() if git_status.returncode == 0 else "Not a git repository"
     top_level_structure = subprocess.run("find . -maxdepth 2", shell=True, capture_output=True, text=True, cwd=cwd)
-    return f'Working directory: {cwd}\n\nGit status:\n{git_status.stdout}\n\nTop-level file structure:\n{top_level_structure.stdout}'
-
-def handle_text_block(block):
-    print(f"Assistant: {block.text}")
+    return f'Working directory: {cwd}\n\nGit status:\n{git_output}\n\nTop-level file structure:\n{top_level_structure.stdout}'
 
 def main():
     load_dotenv()
@@ -185,29 +183,29 @@ def main():
 
         # Agent's turn loop: keep responding until it ends its turn or uses a tool
         while True:
-            response = client.messages.create(
+            with client.messages.stream(             
                 model=default_model,
                 max_tokens=max_tokens,
                 system=system,
                 tools=tools,
-                messages=messages
-            )
+                messages=messages) as stream:
+                # Stream the response for a better user experience. The final message will be the same as the last streamed message, but we want to print it as it comes in.
+                for text in stream.text_stream:
+                    print(text, end="", flush=True)
+                response = stream.get_final_message()
 
             messages.append({"role": "assistant", "content": response.content})
 
             if response.stop_reason == 'end_turn':
-                for block in response.content:
-                    if block.type == 'text':
-                        handle_text_block(block)
+                print()
+                print('=== Assistant ended turn ===')
                 break
 
             elif response.stop_reason == 'tool_use':
+                print()
                 tool_results = []
 
                 for block in response.content:
-                    if block.type == 'text':
-                        handle_text_block(block)
-
                     if block.type == 'tool_use':
                         result = run_tool(block.name, block.input)
                         tool_results.append({
