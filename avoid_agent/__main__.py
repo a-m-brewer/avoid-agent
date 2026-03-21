@@ -4,6 +4,9 @@ import subprocess
 
 from dotenv import load_dotenv
 
+CONTEXT_LIMIT = 200_000
+COMPACTION_THRESHOLD = 0.75  # compact at 75% full
+
 # What does the agent have access to? Define tools here.
 tools = [
     {
@@ -137,12 +140,39 @@ def run_tool(name, tool_input):
 
     return f"Unknown tool: {name}"
 
+
+def compact_messages(client, messages, model, keep_last=6, max_tokens=8192):
+    to_summarize = messages[:-keep_last]
+    recent = messages[-keep_last:]
+
+    summary_response = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[
+            *to_summarize,
+            {
+                "role": "user",
+                "content": "Summarize this conversation so far. Include: what the user asked for, what was explored, what changes were made, and any important findings. Be concise but complete."
+            }
+        ]
+    )
+
+    summary_text = summary_response.content[0].text
+
+    return [
+        {"role": "user", "content": f"[Conversation summary]\n{summary_text}"},
+        {"role": "assistant", "content": "Understood."},
+        *recent
+    ]
+
+
 def gather_initial_context():
     cwd = os.getcwd()
     git_status = subprocess.run("git status --short", shell=True, capture_output=True, text=True, cwd=cwd)
     git_output = git_status.stdout.strip() if git_status.returncode == 0 else "Not a git repository"
     top_level_structure = subprocess.run("find . -maxdepth 2", shell=True, capture_output=True, text=True, cwd=cwd)
     return f'Working directory: {cwd}\n\nGit status:\n{git_output}\n\nTop-level file structure:\n{top_level_structure.stdout}'
+
 
 def main():
     load_dotenv()
@@ -222,6 +252,12 @@ def main():
             else:
                 print(f"Unexpected stop reason: {response.stop_reason}")
                 break
+            
+            if response.usage.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
+                print("  (Compacting conversation to save memory.)")
+                messages = compact_messages(client, messages, model=default_model, max_tokens=max_tokens)
+                print("  (Conversation compacted.)")
+
 
 if __name__ == "__main__":
     main()
