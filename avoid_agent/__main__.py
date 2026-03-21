@@ -13,7 +13,7 @@ from avoid_agent.providers import (
     UserMessage,
 )
 from avoid_agent.providers.anthropic import AnthropicProvider
-from avoid_agent.agent.tools import tool_registry, run_tool
+from avoid_agent.agent.tools import run_tool
 
 CONTEXT_LIMIT = 200_000
 COMPACTION_THRESHOLD = 0.75  # compact at 75% full
@@ -45,7 +45,7 @@ def gather_initial_context():
         else "Not a git repository"
     )
     top_level_structure = subprocess.run(
-        "find . -maxdepth 2", shell=True, capture_output=True, text=True, cwd=cwd
+        "find . -maxdepth 2 ! -path './.venv/*' ! -path './.git' ! -path './.git/*' ! -path '*/__pycache__/*'", shell=True, capture_output=True, text=True, cwd=cwd
     )
     return f"Working directory: {cwd}\n\nGit status:\n{git_output}\n\nTop-level file structure:\n{top_level_structure.stdout}"
 
