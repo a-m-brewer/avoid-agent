@@ -229,6 +229,11 @@ def main():
             if response.stop_reason == 'end_turn':
                 print()
                 print('=== Assistant ended turn ===')
+
+                if response.usage.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
+                    print("  (Compacting conversation to save memory.)")
+                    messages = compact_messages(client, messages, model=default_model, max_tokens=max_tokens)
+                    print("  (Conversation compacted.)")
                 break
 
             elif response.stop_reason == 'tool_use':
@@ -252,11 +257,6 @@ def main():
             else:
                 print(f"Unexpected stop reason: {response.stop_reason}")
                 break
-            
-            if response.usage.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
-                print("  (Compacting conversation to save memory.)")
-                messages = compact_messages(client, messages, model=default_model, max_tokens=max_tokens)
-                print("  (Conversation compacted.)")
 
 
 if __name__ == "__main__":
