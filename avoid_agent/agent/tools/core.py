@@ -2,7 +2,10 @@
 
 from typing_extensions import Annotated
 
+from avoid_agent.agent.tools import tool
 
+
+@tool
 def read_file(path: Annotated[str, "The path to the file to read"]) -> str:
     """Read the contents of a file at the given path."""
     try:

@@ -38,3 +38,12 @@ class ToolDefinition:
     name: str
     description: str
     parameters: list[ParamDefinition]
+
+
+_tool_registry: list = []
+
+
+def tool(func):
+    """Decorator that registers a function as an agent tool."""
+    _tool_registry.append(func)
+    return func
