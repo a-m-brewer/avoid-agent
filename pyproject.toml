@@ -1,0 +1,27 @@
+[project]
+name = "avoid-agent"
+version = "0.1.0"
+description = "A minimal AI agent built for learning and self-improvement."
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic",
+    "python-dotenv",
+]
+
+[project.scripts]
+avoid-agent = "avoid_agent.__main__:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["avoid_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

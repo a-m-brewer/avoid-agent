@@ -10,6 +10,32 @@
             "request": "launch",
             "module": "avoid_agent",
             "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Run Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Debug Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["-v"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug Current Test File",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["-v", "${file}"],
+            "cwd": "${workspaceFolder}"
         }
     ]
 }
