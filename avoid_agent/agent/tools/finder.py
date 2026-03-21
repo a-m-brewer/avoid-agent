@@ -6,7 +6,7 @@ import tomllib
 from importlib.metadata import entry_points
 from pathlib import Path
 
-from avoid_agent.agent.tools import ToolDefinition, _tool_registry
+from avoid_agent.agent.tools import ToolDefinition, tool_registry
 from avoid_agent.agent.tools.inspector import generate_tool_schema
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ def find_available_tools(
     tools: list[ToolDefinition] = []
     seen_tools: set[str] = set()
 
-    for func in _tool_registry:
+    for func in tool_registry.values():
         tool_definition = generate_tool_schema(func)
         if tool_definition.name in seen_tools:
             logger.warning(

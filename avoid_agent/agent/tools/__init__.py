@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Callable
 
 
 class ParameterType(StrEnum):
@@ -40,10 +41,19 @@ class ToolDefinition:
     parameters: list[ParamDefinition]
 
 
-_tool_registry: list = []
+tool_registry: dict[str, Callable] = {}
 
 
 def tool(func):
     """Decorator that registers a function as an agent tool."""
-    _tool_registry.append(func)
+    tool_registry[func.__name__] = func
     return func
+
+
+def run_tool(name: str, arguments: dict) -> str:
+    """Run a registered tool by name with the given arguments."""
+    if name not in tool_registry:
+        return f"Error: Tool '{name}' not found."
+
+    func = tool_registry[name]
+    return func(**arguments)
