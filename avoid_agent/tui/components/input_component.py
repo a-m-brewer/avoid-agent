@@ -10,10 +10,10 @@ class InputComponent:
         self.line = InputLine()
 
     def render(self, width: int) -> list[str]:
-        content = self.prompt + self.line.text
+        content = " " + self.prompt + self.line.text
         padded = content + " " * max(0, width - len(content))
         return [bg_dark(padded)]
 
     @property
     def cursor_col(self) -> int:
-        return len(self.prompt) + self.line.cursor
+        return 1 + len(self.prompt) + self.line.cursor
