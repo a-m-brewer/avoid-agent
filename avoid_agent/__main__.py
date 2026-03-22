@@ -74,7 +74,8 @@ def main():
     )
     messages = gather_initial_context_messages()
 
-    tui = TUI(on_submit=lambda _: None)
+    tui = TUI(model=default_model,
+              on_submit=lambda _: None)
 
     def on_submit(text: str) -> None:
         nonlocal messages
@@ -91,6 +92,7 @@ def main():
                 for chunk in stream.text_stream():
                     tui.append_chunk(chunk)
                 response = stream.get_final_message()
+                tui.update_tokens(response.input_tokens)
 
             messages.append(response.message)
 

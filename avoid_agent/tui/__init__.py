@@ -1,9 +1,13 @@
 """Text-based user interface for interacting with the agent in the terminal."""
 
 import sys
+import threading
+import time
 
 from avoid_agent.tui.components.conversation import AssistantItem, ConversationComponent, UserItem
 from avoid_agent.tui.components.input_component import InputComponent
+from avoid_agent.tui.components.spinner import SpinnerComponent
+from avoid_agent.tui.components.status_bar import StatusBarComponent
 from avoid_agent.tui.history import History
 from avoid_agent.tui.keys import parse_key
 from avoid_agent.tui.renderer import Renderer
@@ -13,18 +17,29 @@ from avoid_agent.tui.terminal import Terminal
 class TUI:
     """A simple text-based user interface for interacting with the agent in the terminal."""
 
-    def __init__(self, on_submit, prompt: str = "You: "):
+    def __init__(self,
+                 on_submit,
+                 model: str,
+                 prompt: str = "You: "):
         self._terminal = Terminal()
         self._input = InputComponent(prompt=prompt)
         self._history = History()
         self._renderer = Renderer(self._terminal)
         self._conversation = ConversationComponent()
+        self._status = StatusBarComponent(model=model)
         self.on_submit = on_submit
+
+        # Spinner
+        self._spinner = SpinnerComponent()
+        self._busy = False
+        self._lock = threading.Lock()
+        self._spinner_thread: threading.Thread | None = None
+
 
     def run(self) -> None:
         self._terminal.start()
         try:
-            self._render()
+            self._safe_render()
             while True:
                 data = self._terminal.read_key()
                 key = parse_key(data)
@@ -37,7 +52,11 @@ class TUI:
 
     def push_item(self, item) -> None:
         self._conversation.items.append(item)
-        self._render()
+        self._safe_render()
+
+    def update_tokens(self, tokens: int) -> None:
+        self._status.tokens = tokens
+        self._safe_render()
 
     def append_chunk(self, text: str) -> None:
         if self._conversation.items and isinstance(
@@ -46,20 +65,29 @@ class TUI:
             self._conversation.items[-1].text += text
         else:
             self._conversation.items.append(AssistantItem(text=text))
-        self._render()
+        self._safe_render()
 
     def clear_conversation(self) -> None:
         self._conversation.items.clear()
-        self._render()
+        self._safe_render()
+
+    def _safe_render(self) -> None:
+        with self._lock:
+            self._render()
 
     def _render(self) -> None:
         width = self._terminal.columns
-        lines = self._conversation.render(width) + self._input.render(width)
+        lines = (
+            self._conversation.render(width)
+            + (self._spinner.render(width) if self._busy else [])
+            + self._input.render(width)
+            + self._status.render(width)
+        )
         if self._renderer.has_content:
             self._terminal.write("\x1b8")
         self._renderer.render(lines)
         self._terminal.write("\x1b7")
-        self._terminal.move_up(1)
+        self._terminal.move_up(2)
         self._terminal.write("\r")
         if self._input.cursor_col > 0:
             self._terminal.write(f"\x1b[{self._input.cursor_col}C")
@@ -73,11 +101,14 @@ class TUI:
             if text.strip():
                 self._history.push(text)
                 if text.strip() in ("exit", "quit"):
-                    self._render()
+                    self._safe_render()
                     return True
                 self._conversation.items.append(UserItem(text=text))
-                self._render()
+                self._safe_render()
+                self._start_spinner()
                 self.on_submit(text)
+                self._stop_spinner()
+
         elif key == "backspace":
             self._input.line.backspace()
         elif key == "delete":
@@ -108,5 +139,24 @@ class TUI:
         elif len(key) == 1:
             self._input.line.insert(key)
 
-        self._render()
+        self._safe_render()
         return False
+
+    # Spinner
+    def _start_spinner(self) -> None:
+        self._busy = True
+        self._spinner_thread = threading.Thread(target=self._spin_loop, daemon=True)
+        self._spinner_thread.start()
+
+    def _stop_spinner(self) -> None:
+        self._busy = False
+        if self._spinner_thread:
+            self._spinner_thread.join()
+            self._spinner_thread = None
+        self._safe_render()
+
+    def _spin_loop(self) -> None:
+        while self._busy:
+            self._spinner.tick()
+            self._safe_render()
+            time.sleep(0.1)
