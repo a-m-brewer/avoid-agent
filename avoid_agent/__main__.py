@@ -14,6 +14,8 @@ from avoid_agent.providers import (
 )
 from avoid_agent import providers
 from avoid_agent.agent.tools import run_tool
+from avoid_agent.tui import TUI
+from avoid_agent.tui.components.conversation import ToolCallItem, ToolResultItem
 
 CONTEXT_LIMIT = 200_000
 COMPACTION_THRESHOLD = 0.75  # compact at 75% full
@@ -45,7 +47,11 @@ def gather_initial_context():
         else "Not a git repository"
     )
     top_level_structure = subprocess.run(
-        "find . -maxdepth 2 ! -path './.venv/*' ! -path './.git' ! -path './.git/*' ! -path '*/__pycache__/*'", shell=True, capture_output=True, text=True, cwd=cwd
+        "find . -maxdepth 2 ! -path './.venv/*' ! -path './.git' ! -path './.git/*' ! -path '*/__pycache__/*'",
+        shell=True,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
     )
     return f"Working directory: {cwd}\n\nGit status:\n{git_output}\n\nTop-level file structure:\n{top_level_structure.stdout}"
 
@@ -63,60 +69,45 @@ def main():
     max_tokens = int(os.getenv("MAX_TOKENS", "8192"))
     tool_definitions = find_available_tools()
 
-    # This is the atom. Understand this before anything else.
     provider = providers.get_provider(
-        model=default_model,
-        system=system,
-        max_tokens=max_tokens
+        model=default_model, system=system, max_tokens=max_tokens
     )
-
-    # The agent's memory of the conversation.
-    # It knows nothing other than what is in this list.
-    # Curate it for what you want the agent to know and remember.
     messages = gather_initial_context_messages()
 
-    while True:
-        # User's turn: get input and add to messages
-        user_input = ""
-        while not user_input.strip():
-            user_input = input("You: ")
-            if user_input.lower() in ["exit", "quit"]:
-                print("Exiting.")
-                return
-            if not user_input.strip():
-                print("  (Please enter a message, or type 'exit' to quit.)")
+    tui = TUI(on_submit=lambda _: None)
 
-        if user_input.strip() == "/clear":
+    def on_submit(text: str) -> None:
+        nonlocal messages
+
+        if text.strip() == "/clear":
             messages = gather_initial_context_messages()
-            print("  (Conversation cleared.)")
-            continue
+            tui.clear_conversation()
+            return
 
-        messages.append(UserMessage(text=user_input))
+        messages.append(UserMessage(text=text))
 
-        # Agent's turn loop: keep responding until it ends its turn or uses a tool
         while True:
-            with provider.stream(messages=messages,
-                                 tools=tool_definitions) as stream:
-                # Stream the response for a better user experience. The final message will be the same as the last streamed message, but we want to print it as it comes in.
+            with provider.stream(messages=messages, tools=tool_definitions) as stream:
                 for chunk in stream.text_stream():
-                    print(chunk, end="", flush=True)
+                    tui.append_chunk(chunk)
                 response = stream.get_final_message()
 
             messages.append(response.message)
 
             if response.stop:
-                print()
-                print("=== Assistant ended turn ===")
-
                 if response.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
-                    print("  (Compacting conversation to save memory.)")
                     messages = provider.compact(messages, keep_last=6)
-                    print("  (Conversation compacted.)")
                 break
 
             for tc in response.message.tool_calls:
+                tui.push_item(ToolCallItem(name=tc.name, arguments=tc.arguments))
                 result = run_tool(tc.name, tc.arguments)
                 messages.append(ToolResultMessage(tool_call_id=tc.id, content=result))
+                tui.push_item(ToolResultItem(name=tc.name, content=result))
+
+    tui.on_submit = on_submit
+    tui.run()
+
 
 
 if __name__ == "__main__":
