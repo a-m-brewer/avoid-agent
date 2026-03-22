@@ -12,7 +12,7 @@ from avoid_agent.providers import (
     ToolResultMessage,
     UserMessage,
 )
-from avoid_agent.providers.anthropic import AnthropicProvider
+from avoid_agent import providers
 from avoid_agent.agent.tools import run_tool
 
 CONTEXT_LIMIT = 200_000
@@ -59,14 +59,14 @@ def gather_initial_context_messages() -> list[Message]:
 
 def main():
     load_dotenv()
-    default_model = os.getenv("DEFAULT_MODEL", "claude-sonnet-4-6")
+    default_model = os.getenv("DEFAULT_MODEL", "anthropic/claude-sonnet-4-6")
     max_tokens = int(os.getenv("MAX_TOKENS", "8192"))
     tool_definitions = find_available_tools()
 
     # This is the atom. Understand this before anything else.
-    provider = AnthropicProvider(
-        system=system,
+    provider = providers.get_provider(
         model=default_model,
+        system=system,
         max_tokens=max_tokens
     )
 
