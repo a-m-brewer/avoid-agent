@@ -132,7 +132,7 @@ class OpenAIProvider(Provider):
             return {"role": "user", "content": msg.text}
 
         if isinstance(msg, AssistantMessage):
-            am = {"role": "assistant", "content": msg.text}
+            am = {"role": "assistant", "content": msg.text or ""}
 
             if not msg.tool_calls:
                 return am
