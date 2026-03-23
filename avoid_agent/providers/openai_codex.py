@@ -300,47 +300,48 @@ class OpenAICodexProvider(Provider):
         )
 
     def compact(self, messages: list[Message], keep_last: int = 6) -> list[Message]:
-        """Summarise older messages using the Codex API (non-streaming)."""
+        """Summarise older messages via a streaming Codex request."""
         to_summarize = self._convert_messages(messages[:-keep_last])
         to_summarize.append({
             "role": "user",
             "content": (
-                "Summarize this conversation so far. Include: what the user asked for, "
-                "what was explored, what changes were made, and any important findings. "
-                "Be concise but complete."
+                "Summarize this conversation so far. Include: what the user "
+                "asked for, what was explored, what changes were made, and "
+                "any important findings. Be concise but complete."
             ),
         })
 
         body = {
             "model": self.model,
             "store": False,
-            "stream": False,
+            "stream": True,
             "instructions": self.system,
             "input": to_summarize,
         }
-        headers = self._build_headers()
-        headers["Accept"] = "application/json"
-        del headers["OpenAI-Beta"]
+        body_bytes = json.dumps(body).encode()
 
         req = Request(
             CODEX_URL,
-            data=json.dumps(body).encode(),
-            headers=headers,
+            data=body_bytes,
+            headers=self._build_headers(),
             method="POST",
         )
         try:
-            with urlopen(req) as resp:
-                result = json.loads(resp.read())
+            with urlopen(req, timeout=_STREAM_TIMEOUT) as resp:
+                summary_parts: list[str] = []
+                for event in _parse_sse(resp):
+                    etype = event.get("type", "")
+                    if etype == "response.output_text.delta":
+                        summary_parts.append(event.get("delta", ""))
+                summary_text = "".join(summary_parts)
         except HTTPError as e:
-            raise RuntimeError(f"Codex compact request failed: {e.code}") from e
+            error_body = e.read().decode(errors="replace") if e.fp else ""
+            raise RuntimeError(
+                f"Codex compact failed ({e.code}): {error_body[:500]}"
+            ) from e
 
-        # Extract text from output
-        summary_text = ""
-        for item in result.get("output", []):
-            if item.get("type") == "message":
-                for part in item.get("content", []):
-                    if part.get("type") == "output_text":
-                        summary_text += part.get("text", "")
+        if not summary_text.strip():
+            raise RuntimeError("Codex compact returned empty summary")
 
         return [
             UserMessage(text=f"[Conversation summary]\n{summary_text}"),

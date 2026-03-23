@@ -24,6 +24,7 @@ from avoid_agent.tui import TUI
 from avoid_agent.tui.components.conversation import (
     AssistantItem,
     ConversationItem,
+    StatusItem,
     ToolCallItem,
     ToolResultItem,
     UserItem,
@@ -185,6 +186,18 @@ def _run_agent() -> None:
             tui.clear_conversation()
             return
 
+        if text.strip() == "/compact":
+            try:
+                messages = provider.compact(messages, keep_last=6)
+                save_session(cwd, messages)
+                tui.clear_conversation()
+                for item in messages_to_items(messages):
+                    tui.push_item(item)
+                tui.report_info("Conversation compacted.")
+            except Exception as e:  # pylint: disable=broad-except
+                tui.report_error(f"Compact failed: {e}")
+            return
+
         messages_checkpoint = messages[:]
         messages.append(UserMessage(text=text))
 
@@ -202,7 +215,22 @@ def _run_agent() -> None:
                                 id=tc_ev.id,
                                 name=tc_ev.name,
                                 arguments=tc_ev.arguments,
+                                status="pending",
                             ))
+                            tui.set_spinner_message(f"tool detected: {tc_ev.name}")
+                        elif event.type == "reasoning_item" and event.reasoning_item:
+                            summary = event.reasoning_item.get("summary")
+                            if isinstance(summary, list):
+                                text = " ".join(str(x) for x in summary if x)
+                            else:
+                                text = str(summary or "reasoning")
+                            tui.push_item(StatusItem(text=f"reasoning: {text}"))
+                            tui.set_spinner_message("reasoning...")
+                        elif event.type == "status" and event.status:
+                            tui.push_item(StatusItem(text=event.status))
+                            tui.set_spinner_message(event.status)
+                        elif event.type == "error" and event.error:
+                            tui.report_error(event.error)
                     response = stream.get_final_message()
                     tui.update_tokens(response.input_tokens)
 
@@ -229,7 +257,9 @@ def _run_agent() -> None:
                     break
 
                 for tc in response.message.tool_calls:
-                    tui.push_item(ToolCallItem(id=tc.id, name=tc.name, arguments=tc.arguments))
+                    tui.push_item(ToolCallItem(id=tc.id, name=tc.name, arguments=tc.arguments, status="pending"))
+                    tui.update_tool_status(tc.id, "running")
+                    tui.set_spinner_message(f"running tool: {tc.name}")
 
                     if tc.name == "run_bash":
                         cmd = tc.arguments.get("command", "")
@@ -239,7 +269,8 @@ def _run_agent() -> None:
                             if decision == "deny":
                                 result = "User denied this command."
                                 messages.append(ToolResultMessage(tool_call_id=tc.id, content=result))
-                                tui.push_item(ToolResultItem(id=tc.id, name=tc.name, content=result))
+                                tui.update_tool_status(tc.id, "failed")
+                                tui.push_item(ToolResultItem(id=tc.id, name=tc.name, content=result, status="failed"))
                                 continue
                             if decision == "save":
                                 allowed_prefixes.add(prefix)
@@ -247,7 +278,8 @@ def _run_agent() -> None:
 
                     result = run_tool(tc.name, tc.arguments)
                     messages.append(ToolResultMessage(tool_call_id=tc.id, content=result))
-                    tui.push_item(ToolResultItem(id=tc.id, name=tc.name, content=result))
+                    tui.update_tool_status(tc.id, "done")
+                    tui.push_item(ToolResultItem(id=tc.id, name=tc.name, content=result, status="done"))
 
         except Exception as e:  # pylint: disable=broad-except
             messages = messages_checkpoint

@@ -92,6 +92,14 @@ class TUI:
             self._conversation.items.append(AssistantItem(text=f"[Error: {message}]"))
         self._safe_render()
 
+    def report_info(self, message: str) -> None:
+        """Append an informational message to the conversation."""
+        if self._conversation.items and isinstance(self._conversation.items[-1], AssistantItem):
+            self._conversation.items[-1].text += f"\n\n{message}"
+        else:
+            self._conversation.items.append(AssistantItem(text=message))
+        self._safe_render()
+
     def _safe_render(self) -> None:
         with self._lock:
             self._render()
