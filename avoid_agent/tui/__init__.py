@@ -71,11 +71,20 @@ class TUI:
         self._conversation.items.clear()
         self._safe_render()
 
+    def report_error(self, message: str) -> None:
+        """Append an error to the last assistant response, or push a new one."""
+        if self._conversation.items and isinstance(self._conversation.items[-1], AssistantItem):
+            self._conversation.items[-1].text += f"\n\n[Error: {message}]"
+        else:
+            self._conversation.items.append(AssistantItem(text=f"[Error: {message}]"))
+        self._safe_render()
+
     def _safe_render(self) -> None:
         with self._lock:
             self._render()
 
     def _render(self) -> None:
+        self._terminal.hide_cursor()
         width = self._terminal.columns
         lines = (
             self._conversation.render(width)
@@ -87,10 +96,23 @@ class TUI:
             self._terminal.write("\x1b8")
         self._renderer.render(lines)
         self._terminal.write("\x1b7")
-        self._terminal.move_up(2)
+
+        # Move up to the start of the input line, accounting for physical wrapping
+        input_lines = self._input.render(width)
+        status_lines = self._status.render(width)
+        rows_up = self._renderer.physical_rows(input_lines + status_lines)
+        self._terminal.move_up(rows_up)
         self._terminal.write("\r")
-        if self._input.cursor_col > 0:
-            self._terminal.write(f"\x1b[{self._input.cursor_col}C")
+
+        # Position cursor within the (possibly wrapped) input line
+        cursor_col = self._input.cursor_col
+        row_in_input = cursor_col // width
+        col_in_row = cursor_col % width
+        if row_in_input > 0:
+            self._terminal.write(f"\x1b[{row_in_input}B")
+        if col_in_row > 0:
+            self._terminal.write(f"\x1b[{col_in_row}C")
+        self._terminal.show_cursor()
 
     def _handle_key(self, key: str, data: bytes) -> bool:
         """Returns True if the loop should exit."""

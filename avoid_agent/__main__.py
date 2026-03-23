@@ -85,27 +85,33 @@ def main():
             tui.clear_conversation()
             return
 
+        messages_checkpoint = messages[:]
         messages.append(UserMessage(text=text))
 
-        while True:
-            with provider.stream(messages=messages, tools=tool_definitions) as stream:
-                for chunk in stream.text_stream():
-                    tui.append_chunk(chunk)
-                response = stream.get_final_message()
-                tui.update_tokens(response.input_tokens)
+        try:
+            while True:
+                with provider.stream(messages=messages, tools=tool_definitions) as stream:
+                    for chunk in stream.text_stream():
+                        tui.append_chunk(chunk)
+                    response = stream.get_final_message()
+                    tui.update_tokens(response.input_tokens)
 
-            messages.append(response.message)
+                messages.append(response.message)
 
-            if response.stop:
-                if response.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
-                    messages = provider.compact(messages, keep_last=6)
-                break
+                if response.stop:
+                    if response.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
+                        messages = provider.compact(messages, keep_last=6)
+                    break
 
-            for tc in response.message.tool_calls:
-                tui.push_item(ToolCallItem(name=tc.name, arguments=tc.arguments))
-                result = run_tool(tc.name, tc.arguments)
-                messages.append(ToolResultMessage(tool_call_id=tc.id, content=result))
-                tui.push_item(ToolResultItem(name=tc.name, content=result))
+                for tc in response.message.tool_calls:
+                    tui.push_item(ToolCallItem(name=tc.name, arguments=tc.arguments))
+                    result = run_tool(tc.name, tc.arguments)
+                    messages.append(ToolResultMessage(tool_call_id=tc.id, content=result))
+                    tui.push_item(ToolResultItem(name=tc.name, content=result))
+
+        except Exception as e:  # pylint: disable=broad-except
+            messages = messages_checkpoint
+            tui.report_error(str(e))
 
     tui.on_submit = on_submit
     tui.run()

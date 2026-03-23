@@ -143,4 +143,16 @@ def get_provider(model: str | None, system: str, max_tokens: int | None) -> Prov
             system=system, model=model_name, max_tokens=internal_max_tokens
         )
 
+    if provider_name == "openai-codex":
+        # pylint: disable=import-outside-toplevel
+        from avoid_agent.providers.openai_codex import OpenAICodexProvider
+        from avoid_agent.providers.openai_codex_oauth import get_valid_credentials
+        creds = get_valid_credentials()
+        return OpenAICodexProvider(
+            system=system,
+            model=model_name,
+            max_tokens=internal_max_tokens,
+            credentials=creds,
+        )
+
     raise ValueError(f"Unsupported provider: {provider_name}")
