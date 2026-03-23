@@ -15,6 +15,8 @@ ESCAPE_SEQUENCES: dict[bytes, str] = {
     b"\x1bOQ": "f2",
     b"\x1bOR": "f3",
     b"\x1bOS": "f4",
+    b"\x1b[200~": "paste_start",
+    b"\x1b[201~": "paste_end",
 }
 
 CTRL_KEYS: dict[bytes, str] = {

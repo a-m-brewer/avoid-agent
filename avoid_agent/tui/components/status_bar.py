@@ -6,10 +6,11 @@ class StatusBarComponent:
     def __init__(self, model: str):
         self.model = model
         self.tokens = 0
+        self.messages = 0
 
     def render(self, width: int) -> list[str]:
         left = f" {self.model}"
-        right = f"{self.tokens} tokens "
+        right = f"{self.messages} msgs | {self.tokens} tokens "
         gap = width - len(left) - len(right)
         if gap < 0:
             line = (left + right)[:width]

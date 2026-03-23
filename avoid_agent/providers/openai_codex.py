@@ -19,20 +19,48 @@ def _debug_log(event: dict) -> None:
 from avoid_agent.agent.tools import ToolDefinition
 from avoid_agent.providers import (
     AssistantMessage,
+    AssistantTextBlock,
+    AssistantThinkingBlock,
     Message,
     Provider,
     ProviderEvent,
     ProviderResponse,
     ProviderStream,
     ProviderToolCall,
+    StopReason,
     ToolResultMessage,
     UserMessage,
+    Usage,
+    normalize_messages,
 )
 
 CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 # Time to wait for data before treating the connection as dead.
 # Long enough for deep reasoning pauses; short enough to recover after sleep/disconnect.
 _STREAM_TIMEOUT = 120
+
+
+def _extract_reasoning_text(item: dict) -> str:
+    summary = item.get("summary")
+    if isinstance(summary, list):
+        return "\n\n".join(
+            str(part.get("text", "")).strip()
+            for part in summary
+            if isinstance(part, dict) and str(part.get("text", "")).strip()
+        )
+    if isinstance(summary, str):
+        return summary
+    return ""
+
+
+def _map_stop_reason(status: str | None) -> StopReason:
+    if status == "incomplete":
+        return "length"
+    if status in ("failed", "cancelled"):
+        return "error"
+    if status in ("completed", "queued", "in_progress", None):
+        return "stop"
+    return "error"
 
 
 def _parse_sse(response) -> Iterator[dict]:
@@ -65,15 +93,17 @@ class CodexStream(ProviderStream):
         self._make_request = make_request
         self._on_401 = on_401
         self._response = None
-        self._text = ""
-        self._text_id: str | None = None
+        self._content: list[AssistantTextBlock | AssistantThinkingBlock | ProviderToolCall] = []
         self._tool_calls: list[ProviderToolCall] = []
         self._reasoning_items: list[dict] = []
-        self._stop = True
-        self._input_tokens = 0
+        self._usage = Usage()
+        self._stop_reason: StopReason = "stop"
         # Per-item streaming state
         self._current_item_type: str | None = None
         self._pending_args = ""
+        self._current_text_block: AssistantTextBlock | None = None
+        self._current_tool_call: ProviderToolCall | None = None
+        self._current_thinking_block: AssistantThinkingBlock | None = None
 
     def _open(self) -> None:
         req = self._make_request()
@@ -104,21 +134,35 @@ class CodexStream(ProviderStream):
                 item = event.get("item", {})
                 self._current_item_type = item.get("type")
                 self._pending_args = ""
-                if self._current_item_type == "function_call":
-                    tool_call = ProviderToolCall(
+                if self._current_item_type == "message":
+                    self._current_text_block = AssistantTextBlock(
+                        text="",
+                        item_id=item.get("id"),
+                    )
+                    self._content.append(self._current_text_block)
+                elif self._current_item_type == "reasoning":
+                    self._current_thinking_block = AssistantThinkingBlock(text="")
+                    self._content.append(self._current_thinking_block)
+                elif self._current_item_type == "function_call":
+                    self._current_tool_call = ProviderToolCall(
                         id=item.get("call_id", item.get("id", "")),
                         name=item.get("name", ""),
                         arguments={},
                         item_id=item.get("id"),
                     )
-                    self._tool_calls.append(tool_call)
-                    yield ProviderEvent(type="tool_call_detected", tool_call=tool_call)
+                    self._tool_calls.append(self._current_tool_call)
+                    self._content.append(self._current_tool_call)
+                    yield ProviderEvent(
+                        type="tool_call_detected",
+                        tool_call=self._current_tool_call,
+                    )
                 continue
 
             if event_type == "response.output_text.delta":
                 delta = event.get("delta", "")
                 if delta:
-                    self._text += delta
+                    if self._current_text_block is not None:
+                        self._current_text_block.text += delta
                     yield ProviderEvent(type="text_delta", text=delta)
                 continue
 
@@ -133,24 +177,40 @@ class CodexStream(ProviderStream):
             if event_type == "response.output_item.done":
                 item = event.get("item", {})
                 itype = item.get("type")
-                if itype == "reasoning":
+                if itype == "reasoning" and self._current_thinking_block is not None:
+                    self._current_thinking_block.text = _extract_reasoning_text(item)
+                    self._current_thinking_block.raw_item = item
                     self._reasoning_items.append(item)
                     yield ProviderEvent(type="reasoning_item", reasoning_item=item)
-                elif itype == "message":
-                    self._text_id = item.get("id")
-                elif itype == "function_call" and self._tool_calls:
+                    self._current_thinking_block = None
+                elif itype == "message" and self._current_text_block is not None:
+                    self._current_text_block.item_id = item.get("id")
+                    if not self._current_text_block.text:
+                        content = item.get("content", [])
+                        self._current_text_block.text = "".join(
+                            str(part.get("text", ""))
+                            for part in content
+                            if isinstance(part, dict) and part.get("type") == "output_text"
+                        )
+                    self._current_text_block = None
+                elif itype == "function_call" and self._current_tool_call is not None:
                     try:
                         args = json.loads(self._pending_args or item.get("arguments", "{}"))
                     except json.JSONDecodeError:
                         args = {}
-                    self._tool_calls[-1].arguments = args
+                    self._current_tool_call.arguments = args
+                    self._current_tool_call = None
                 self._current_item_type = None
                 continue
 
-            if event_type in ("response.completed", "response.done"):
+            if event_type in ("response.completed", "response.done", "response.incomplete"):
                 response_obj = event.get("response", {})
                 usage = response_obj.get("usage", {})
-                self._input_tokens = usage.get("input_tokens", 0)
+                self._usage = Usage(
+                    input_tokens=usage.get("input_tokens", 0),
+                    output_tokens=usage.get("output_tokens", 0),
+                    total_tokens=usage.get("total_tokens", 0),
+                )
                 if not self._tool_calls:
                     for item in response_obj.get("output", []):
                         if item.get("type") == "function_call":
@@ -165,9 +225,15 @@ class CodexStream(ProviderStream):
                                 item_id=item.get("id"),
                             )
                             self._tool_calls.append(tool_call)
+                            self._content.append(tool_call)
                             yield ProviderEvent(type="tool_call_detected", tool_call=tool_call)
-                self._stop = len(self._tool_calls) == 0
-                yield ProviderEvent(type="status", status="completed")
+                self._stop_reason = _map_stop_reason(response_obj.get("status"))
+                if self._tool_calls and self._stop_reason == "stop":
+                    self._stop_reason = "tool_use"
+                yield ProviderEvent(
+                    type="status",
+                    status=response_obj.get("status", "completed"),
+                )
                 continue
 
             if event_type == "error":
@@ -178,15 +244,21 @@ class CodexStream(ProviderStream):
             yield ProviderEvent(type="raw", raw_event=event)
 
     def get_final_message(self) -> ProviderResponse:
+        text_blocks = [
+            block for block in self._content if isinstance(block, AssistantTextBlock)
+        ]
         return ProviderResponse(
             message=AssistantMessage(
-                text=self._text or None,
+                text="".join(block.text for block in text_blocks) or None,
                 tool_calls=self._tool_calls,
-                text_id=self._text_id,
+                text_id=text_blocks[0].item_id if len(text_blocks) == 1 else None,
                 reasoning_items=self._reasoning_items,
+                content=self._content,
+                stop_reason=self._stop_reason,
+                usage=self._usage,
             ),
-            stop=self._stop,
-            input_tokens=self._input_tokens,
+            stop_reason=self._stop_reason,
+            input_tokens=self._usage.input_tokens,
         )
 
 
@@ -219,7 +291,7 @@ class OpenAICodexProvider(Provider):
             "store": False,
             "stream": True,
             "instructions": self.system,
-            "input": self._convert_messages(messages),
+            "input": self._convert_messages(normalize_messages(messages)),
             "tool_choice": "auto",
             "parallel_tool_calls": True,
             "text": {"verbosity": "medium"},
@@ -236,33 +308,56 @@ class OpenAICodexProvider(Provider):
                 result.append({"role": "user", "content": msg.text})
 
             elif isinstance(msg, AssistantMessage):
-                # Replay reasoning items first so the model has its prior thinking context
-                for reasoning_item in msg.reasoning_items:
-                    result.append(reasoning_item)
+                if msg.content:
+                    for block in msg.content:
+                        if isinstance(block, AssistantThinkingBlock):
+                            if block.raw_item:
+                                result.append(block.raw_item)
+                        elif isinstance(block, AssistantTextBlock):
+                            text_item: dict = {
+                                "type": "message",
+                                "role": "assistant",
+                                "status": "completed",
+                                "content": [{"type": "output_text", "text": block.text}],
+                            }
+                            if block.item_id:
+                                text_item["id"] = block.item_id
+                            result.append(text_item)
+                        elif isinstance(block, ProviderToolCall):
+                            fc_item: dict = {
+                                "type": "function_call",
+                                "call_id": block.id,
+                                "name": block.name,
+                                "arguments": json.dumps(block.arguments),
+                            }
+                            if block.item_id:
+                                fc_item["id"] = block.item_id
+                            result.append(fc_item)
+                else:
+                    for reasoning_item in msg.reasoning_items:
+                        result.append(reasoning_item)
 
-                # Text portion: include id and status for proper Responses API history format
-                if msg.text:
-                    text_item: dict = {
-                        "type": "message",
-                        "role": "assistant",
-                        "status": "completed",
-                        "content": [{"type": "output_text", "text": msg.text}],
-                    }
-                    if msg.text_id:
-                        text_item["id"] = msg.text_id
-                    result.append(text_item)
+                    if msg.text:
+                        text_item = {
+                            "type": "message",
+                            "role": "assistant",
+                            "status": "completed",
+                            "content": [{"type": "output_text", "text": msg.text}],
+                        }
+                        if msg.text_id:
+                            text_item["id"] = msg.text_id
+                        result.append(text_item)
 
-                # Tool calls: use item_id for "id" and call_id (tc.id) for "call_id"
-                for tc in msg.tool_calls:
-                    fc_item: dict = {
-                        "type": "function_call",
-                        "call_id": tc.id,
-                        "name": tc.name,
-                        "arguments": json.dumps(tc.arguments),
-                    }
-                    if tc.item_id:
-                        fc_item["id"] = tc.item_id
-                    result.append(fc_item)
+                    for tc in msg.tool_calls:
+                        fc_item = {
+                            "type": "function_call",
+                            "call_id": tc.id,
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        }
+                        if tc.item_id:
+                            fc_item["id"] = tc.item_id
+                        result.append(fc_item)
 
             elif isinstance(msg, ToolResultMessage):
                 result.append({
@@ -301,7 +396,7 @@ class OpenAICodexProvider(Provider):
 
     def compact(self, messages: list[Message], keep_last: int = 6) -> list[Message]:
         """Summarise older messages via a streaming Codex request."""
-        to_summarize = self._convert_messages(messages[:-keep_last])
+        to_summarize = self._convert_messages(normalize_messages(messages[:-keep_last]))
         to_summarize.append({
             "role": "user",
             "content": (

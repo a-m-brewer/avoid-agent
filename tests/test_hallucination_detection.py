@@ -19,14 +19,14 @@ def _msg_with_tool(text):
 
 # --- Should detect hallucinated completions ---
 
-def test_detects_implemented_claim():
-    assert _looks_like_hallucinated_completion(
+def test_does_not_detect_sentence_start_past_tense_without_first_person():
+    assert not _looks_like_hallucinated_completion(
         _msg("Implemented the changes in __main__.py.")
     )
 
 
-def test_detects_applied_claim():
-    assert _looks_like_hallucinated_completion(
+def test_does_not_detect_applied_without_first_person():
+    assert not _looks_like_hallucinated_completion(
         _msg("Applied the patch to all three providers.")
     )
 
@@ -43,21 +43,21 @@ def test_detects_changed_claim():
     )
 
 
-def test_detects_modified_claim():
+def test_detects_first_person_modified_claim():
     assert _looks_like_hallucinated_completion(
-        _msg("Modified the provider to support events.")
+        _msg("I modified the provider to support events.")
     )
 
 
-def test_detects_updated_claim():
+def test_detects_first_person_updated_claim():
     assert _looks_like_hallucinated_completion(
-        _msg("Updated the conversation component.")
+        _msg("I updated the conversation component.")
     )
 
 
-def test_detects_wired_claim():
+def test_detects_first_person_wired_claim():
     assert _looks_like_hallucinated_completion(
-        _msg("Wired the new event model into __main__.py.")
+        _msg("I wired the new event model into __main__.py.")
     )
 
 

@@ -31,11 +31,15 @@ class Terminal:
         """Start the terminal in raw mode and set up resize handling."""
         self._old_settings = termios.tcgetattr(self._fd)
         tty.setraw(self._fd)
+        # Enable bracketed paste mode so pasted multiline text can be handled as one message.
+        self.write("\x1b[?2004h")
         if on_resize:
             self._resize_cb = on_resize
             self._old_sigwinch = signal.signal(signal.SIGWINCH, self._handle_sigwinch)
 
     def stop(self) -> None:
+        # Disable bracketed paste mode before restoring terminal settings.
+        self.write("\x1b[?2004l")
         if self._old_settings is not None:
             termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_settings)
             self._old_settings = None

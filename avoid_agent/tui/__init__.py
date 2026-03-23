@@ -35,6 +35,7 @@ class TUI:
         self._displayed_tool_ids: set[str] = set()
         self._lock = threading.Lock()
         self._spinner_thread: threading.Thread | None = None
+        self._in_paste = False
 
 
     def run(self) -> None:
@@ -57,6 +58,11 @@ class TUI:
                 return
             self._displayed_tool_ids.add(item.id)
         self._conversation.items.append(item)
+        if isinstance(item, (UserItem, AssistantItem)):
+            self._status.messages = sum(
+                1 for i in self._conversation.items
+                if isinstance(i, (UserItem, AssistantItem))
+            )
         self._safe_render()
 
     def update_tool_status(self, tool_call_id: str, status: str) -> None:
@@ -77,11 +83,16 @@ class TUI:
             self._conversation.items[-1].text += text
         else:
             self._conversation.items.append(AssistantItem(text=text))
+            self._status.messages = sum(
+                1 for i in self._conversation.items
+                if isinstance(i, (UserItem, AssistantItem))
+            )
         self._safe_render()
 
     def clear_conversation(self) -> None:
         self._conversation.items.clear()
         self._displayed_tool_ids.clear()
+        self._status.messages = 0
         self._safe_render()
 
     def report_error(self, message: str) -> None:
@@ -139,18 +150,25 @@ class TUI:
         """Returns True if the loop should exit."""
         if key == "ctrl+c" or key == "ctrl+d":
             return True
+        elif key == "paste_start":
+            self._in_paste = True
+        elif key == "paste_end":
+            self._in_paste = False
         elif key == "enter":
-            text = self._input.line.clear()
-            if text.strip():
-                self._history.push(text)
-                if text.strip() in ("exit", "quit"):
+            if self._in_paste:
+                self._input.line.insert("\n")
+            else:
+                text = self._input.line.clear()
+                if text.strip():
+                    self._history.push(text)
+                    if text.strip() in ("exit", "quit"):
+                        self._safe_render()
+                        return True
+                    self._conversation.items.append(UserItem(text=text))
                     self._safe_render()
-                    return True
-                self._conversation.items.append(UserItem(text=text))
-                self._safe_render()
-                self._start_spinner()
-                self.on_submit(text)
-                self._stop_spinner()
+                    self._start_spinner()
+                    self.on_submit(text)
+                    self._stop_spinner()
 
         elif key == "backspace":
             self._input.line.backspace()

@@ -8,6 +8,7 @@ from openai import OpenAI
 from avoid_agent.agent.tools import ToolDefinition
 from avoid_agent.providers import (
     AssistantMessage,
+    AssistantTextBlock,
     Message,
     Provider,
     ProviderEvent,
@@ -16,7 +17,21 @@ from avoid_agent.providers import (
     ProviderToolCall,
     ToolResultMessage,
     UserMessage,
+    Usage,
+    normalize_messages,
 )
+
+
+def _map_stop_reason(finish_reason: str | None) -> str:
+    if finish_reason == "tool_calls":
+        return "tool_use"
+    if finish_reason == "length":
+        return "length"
+    if finish_reason == "stop":
+        return "stop"
+    if finish_reason is None:
+        return "stop"
+    return "error"
 
 
 class OpenAIStream(ProviderStream):
@@ -44,10 +59,11 @@ class OpenAIStream(ProviderStream):
     def get_final_message(self) -> ProviderResponse:
         final = self._stream.get_final_completion()
         choice0 = final.choices[0]
+        finish_reason = choice0.finish_reason
 
         tool_calls = (
             []
-            if choice0.finish_reason != "tool_calls"
+            if finish_reason != "tool_calls"
             else [
                 ProviderToolCall(
                     id=block.id,
@@ -58,11 +74,28 @@ class OpenAIStream(ProviderStream):
             ]
         )
 
+        stop_reason = _map_stop_reason(finish_reason)
+        if tool_calls and stop_reason == "stop":
+            stop_reason = "tool_use"
+
+        content = []
+        if choice0.message.content:
+            content.append(AssistantTextBlock(text=choice0.message.content))
+        content.extend(tool_calls)
+
         return ProviderResponse(
             message=AssistantMessage(
-                text=choice0.message.content, tool_calls=tool_calls
+                text=choice0.message.content,
+                tool_calls=tool_calls,
+                content=content,
+                stop_reason=stop_reason,
+                usage=Usage(
+                    input_tokens=final.usage.prompt_tokens,
+                    output_tokens=final.usage.completion_tokens,
+                    total_tokens=final.usage.total_tokens,
+                ),
             ),
-            stop=choice0.finish_reason == "stop",
+            stop_reason=stop_reason,
             input_tokens=final.usage.prompt_tokens,
         )
 
@@ -86,7 +119,7 @@ class OpenAIProvider(Provider):
     def stream(
         self, messages: list[Message], tools: list[ToolDefinition]
     ) -> ProviderStream:
-        provider_messages = self.__get_provider_messages(messages)
+        provider_messages = self.__get_provider_messages(normalize_messages(messages))
         provider_tools = self.__get_provider_tools(tools)
 
         openai_stream = self._client.chat.completions.stream(
@@ -101,7 +134,9 @@ class OpenAIProvider(Provider):
     def compact(self, messages: list[Message], keep_last: int = 6) -> list[Message]:
         """Compacts messages by keeping the last N and summarizing the rest."""
 
-        to_summarize = self.__get_provider_messages(messages[:-keep_last])
+        to_summarize = self.__get_provider_messages(
+            normalize_messages(messages[:-keep_last])
+        )
         recent = messages[-keep_last:]
 
         summary_response = self._client.chat.completions.create(

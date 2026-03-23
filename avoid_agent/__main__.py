@@ -2,11 +2,11 @@
 
 import argparse
 import os
-import re
 import subprocess
 
 from dotenv import load_dotenv
 
+from avoid_agent.agent.runtime import AgentRuntime, RuntimeEvent, _looks_like_hallucinated_completion
 from avoid_agent.agent.tools.finder import find_available_tools
 from avoid_agent.providers import (
     AssistantMessage,
@@ -15,8 +15,7 @@ from avoid_agent.providers import (
     UserMessage,
 )
 from avoid_agent import providers
-from avoid_agent.agent.tools import run_tool
-from avoid_agent.permissions import command_prefix, load_allowed, save_allowed
+from avoid_agent.permissions import load_allowed, save_allowed
 from avoid_agent.session import delete_session, list_sessions, load_session, save_session
 from avoid_agent.prompts import build_system_prompt, export_system_prompt_markdown
 from avoid_agent.prompts.system_prompt import SystemPromptOptions
@@ -32,42 +31,6 @@ from avoid_agent.tui.components.conversation import (
 
 CONTEXT_LIMIT = 200_000
 COMPACTION_THRESHOLD = 0.75  # compact at 75% full
-
-# Patterns that indicate the model claims it performed file modifications.
-# We require either a first-person subject ("I changed") or a sentence-start
-# past tense ("Implemented the...") to avoid matching passive descriptions
-# like "needs to be refactored".
-_COMPLETION_CLAIM_RE = re.compile(
-    r"("
-    r"(?:^|\.\s+)(?:Implemented|Applied|Edited|Changed|Modified"
-    r"|Updated|Patched|Wired|Refactored|Rewrote)"
-    r"\s+(?:the|a|all|both|this|that|it|now|properly|correctly"
-    r"|successfully|in|to|into|across|with)"
-    r"|I\s+(?:changed|edited|modified|updated|applied|wired"
-    r"|patched|rewrote|implemented|refactored)"
-    r"|✅\s*(?:I\s|What\s|Changed)"
-    r")",
-    re.MULTILINE,
-)
-
-MAX_HALLUCINATION_RETRIES = 2
-
-_HALLUCINATION_CORRECTION = (
-    "[SYSTEM] Your previous response claimed to have made file changes, "
-    "but no tool calls were executed. Text responses cannot modify files. "
-    "You MUST call edit_file, write_file, or run_bash to make changes. "
-    "Do not describe changes as complete until a tool result confirms them. "
-    "Please use your tools now to perform the work."
-)
-
-
-def _looks_like_hallucinated_completion(message: AssistantMessage) -> bool:
-    """Detect when the model claims it made edits but issued no tool calls."""
-    if message.tool_calls:
-        return False
-    if not message.text:
-        return False
-    return bool(_COMPLETION_CLAIM_RE.search(message.text))
 
 
 def gather_initial_context() -> tuple[str, str, str]:
@@ -222,87 +185,79 @@ def _run_agent() -> None:
             return
 
         messages_checkpoint = messages[:]
-        messages.append(UserMessage(text=text))
-
-        hallucination_retries = 0
 
         try:
-            while True:
-                with provider.stream(messages=messages, tools=tool_definitions) as stream:
-                    for event in stream.event_stream():
-                        if event.type == "text_delta" and event.text:
-                            tui.append_chunk(event.text)
-                        elif event.type == "tool_call_detected" and event.tool_call:
-                            tc_ev = event.tool_call
-                            tui.push_item(ToolCallItem(
-                                id=tc_ev.id,
-                                name=tc_ev.name,
-                                arguments=tc_ev.arguments,
+            def handle_runtime_event(event: RuntimeEvent) -> None:
+                if event.type == "provider_event" and event.provider_event:
+                    provider_event = event.provider_event
+                    if provider_event.type == "text_delta" and provider_event.text:
+                        tui.append_chunk(provider_event.text)
+                    elif provider_event.type == "tool_call_detected" and provider_event.tool_call:
+                        tool_call = provider_event.tool_call
+                        tui.push_item(
+                            ToolCallItem(
+                                id=tool_call.id,
+                                name=tool_call.name,
+                                arguments=tool_call.arguments,
                                 status="pending",
-                            ))
-                            tui.set_spinner_message(f"tool detected: {tc_ev.name}")
-                        elif event.type == "reasoning_item" and event.reasoning_item:
-                            summary = event.reasoning_item.get("summary")
-                            if isinstance(summary, list):
-                                text = " ".join(str(x) for x in summary if x)
-                            else:
-                                text = str(summary or "reasoning")
-                            tui.push_item(StatusItem(text=f"reasoning: {text}"))
-                            tui.set_spinner_message("reasoning...")
-                        elif event.type == "status" and event.status:
-                            tui.push_item(StatusItem(text=event.status))
-                            tui.set_spinner_message(event.status)
-                        elif event.type == "error" and event.error:
-                            tui.report_error(event.error)
-                    response = stream.get_final_message()
-                    tui.update_tokens(response.input_tokens)
-
-                messages.append(response.message)
-
-                if response.stop:
-                    if (
-                        _looks_like_hallucinated_completion(response.message)
-                        and hallucination_retries < MAX_HALLUCINATION_RETRIES
-                    ):
-                        hallucination_retries += 1
-                        messages.append(
-                            UserMessage(text=_HALLUCINATION_CORRECTION)
+                            )
                         )
-                        tui.report_error(
-                            "Hallucination detected: claimed edits "
-                            "without tool calls. Re-prompting..."
+                        tui.set_spinner_message(f"tool detected: {tool_call.name}")
+                    elif provider_event.type == "reasoning_item" and provider_event.reasoning_item:
+                        summary = provider_event.reasoning_item.get("summary")
+                        if isinstance(summary, list):
+                            summary_text = " ".join(str(x) for x in summary if x)
+                        else:
+                            summary_text = str(summary or "reasoning")
+                        tui.push_item(StatusItem(text=f"reasoning: {summary_text}"))
+                        tui.set_spinner_message("reasoning...")
+                    elif provider_event.type == "status" and provider_event.status:
+                        tui.push_item(StatusItem(text=provider_event.status))
+                        tui.set_spinner_message(provider_event.status)
+                    elif provider_event.type == "error" and provider_event.error:
+                        tui.report_error(provider_event.error)
+                elif event.type == "tool_execution_start" and event.tool_call:
+                    tool_call = event.tool_call
+                    tui.push_item(
+                        ToolCallItem(
+                            id=tool_call.id,
+                            name=tool_call.name,
+                            arguments=tool_call.arguments,
+                            status="pending",
                         )
-                        continue
+                    )
+                    tui.update_tool_status(tool_call.id, "running")
+                    tui.set_spinner_message(f"running tool: {tool_call.name}")
+                elif event.type == "tool_result" and event.tool_result:
+                    tool_result = event.tool_result
+                    status = "failed" if tool_result.is_error else "done"
+                    tui.update_tool_status(tool_result.tool_call_id, status)
+                    tui.push_item(
+                        ToolResultItem(
+                            id=tool_result.tool_call_id,
+                            name=tool_result.tool_name or "tool",
+                            content=tool_result.content,
+                            status=status,
+                        )
+                    )
+                elif event.type == "validation_error" and event.message:
+                    tui.report_error(event.message)
 
-                    if response.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
-                        messages = provider.compact(messages, keep_last=6)
-                    save_session(cwd, messages, active_session)
-                    break
+            runtime = AgentRuntime(
+                provider=provider,
+                tool_definitions=tool_definitions,
+                allowed_prefixes=allowed_prefixes,
+                request_permission=tui.ask_permission,
+                save_allowed_prefixes=save_allowed,
+                on_event=handle_runtime_event,
+            )
+            result = runtime.run_user_turn(messages, text)
+            messages = result.messages
+            tui.update_tokens(result.input_tokens)
 
-                for tc in response.message.tool_calls:
-                    tui.push_item(ToolCallItem(id=tc.id, name=tc.name, arguments=tc.arguments, status="pending"))
-                    tui.update_tool_status(tc.id, "running")
-                    tui.set_spinner_message(f"running tool: {tc.name}")
-
-                    if tc.name == "run_bash":
-                        cmd = tc.arguments.get("command", "")
-                        prefix = command_prefix(cmd)
-                        if prefix not in allowed_prefixes:
-                            decision = tui.ask_permission(cmd)
-                            if decision == "deny":
-                                result = "User denied this command."
-                                messages.append(ToolResultMessage(tool_call_id=tc.id, content=result))
-                                tui.update_tool_status(tc.id, "failed")
-                                tui.push_item(ToolResultItem(id=tc.id, name=tc.name, content=result, status="failed"))
-                                continue
-                            if decision == "save":
-                                allowed_prefixes.add(prefix)
-                                save_allowed(allowed_prefixes)
-
-                    result = run_tool(tc.name, tc.arguments)
-                    messages.append(ToolResultMessage(tool_call_id=tc.id, content=result))
-                    tui.update_tool_status(tc.id, "done")
-                    tui.push_item(ToolResultItem(id=tc.id, name=tc.name, content=result, status="done"))
+            if result.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
+                messages = provider.compact(messages, keep_last=6)
+            save_session(cwd, messages, active_session)
 
         except Exception as e:  # pylint: disable=broad-except
             messages = messages_checkpoint

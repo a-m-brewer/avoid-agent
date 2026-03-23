@@ -1,11 +1,61 @@
 """Module for agent providers."""
 
+from __future__ import annotations
+
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
 import os
-from typing import Iterator, Literal
+import time
+from typing import Iterator, Literal, TypeAlias
 
 from avoid_agent.agent.tools import ToolDefinition
+
+StopReason: TypeAlias = Literal["stop", "tool_use", "length", "error", "aborted"]
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _extract_reasoning_text(item: dict) -> str:
+    summary = item.get("summary")
+    if isinstance(summary, list):
+        return "\n\n".join(
+            str(part.get("text", "")).strip()
+            for part in summary
+            if isinstance(part, dict) and str(part.get("text", "")).strip()
+        )
+    if isinstance(summary, str):
+        return summary
+    return ""
+
+
+@dataclass
+class Usage:
+    """Token usage metadata captured for an assistant message."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
+@dataclass
+class AssistantTextBlock:
+    """Assistant text content."""
+
+    text: str
+    item_id: str | None = None
+    type: Literal["text"] = "text"
+
+
+@dataclass
+class AssistantThinkingBlock:
+    """Assistant reasoning content kept for provider replay."""
+
+    text: str
+    raw_item: dict | None = None
+    type: Literal["thinking"] = "thinking"
+
 
 @dataclass
 class ProviderToolCall:
@@ -15,6 +65,12 @@ class ProviderToolCall:
     name: str
     arguments: dict
     item_id: str | None = None  # Responses API item ID (fc_xxx), separate from call_id
+    type: Literal["tool_call"] = "tool_call"
+
+
+AssistantContentBlock: TypeAlias = (
+    AssistantTextBlock | AssistantThinkingBlock | ProviderToolCall
+)
 
 
 @dataclass
@@ -27,16 +83,60 @@ class UserMessage(Message):
     """Message from the user."""
 
     text: str
+    timestamp: int = field(default_factory=_now_ms)
 
 
 @dataclass
 class AssistantMessage(Message):
     """Message from the assistant."""
 
-    tool_calls: list[ProviderToolCall]
-    text: str | None
+    text: str | None = None
+    tool_calls: list[ProviderToolCall] = field(default_factory=list)
     text_id: str | None = None  # Responses API message item ID for history replay
     reasoning_items: list[dict] = field(default_factory=list)  # reasoning items for replay
+    content: list[AssistantContentBlock] = field(default_factory=list)
+    stop_reason: StopReason = "stop"
+    timestamp: int = field(default_factory=_now_ms)
+    usage: Usage = field(default_factory=Usage)
+    error_message: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.content:
+            self.content = []
+            for reasoning_item in self.reasoning_items:
+                self.content.append(
+                    AssistantThinkingBlock(
+                        text=_extract_reasoning_text(reasoning_item),
+                        raw_item=reasoning_item,
+                    )
+                )
+            if self.text:
+                self.content.append(
+                    AssistantTextBlock(text=self.text, item_id=self.text_id)
+                )
+            self.content.extend(self.tool_calls)
+            return
+
+        if self.text is None:
+            text_blocks = [
+                block for block in self.content if isinstance(block, AssistantTextBlock)
+            ]
+            if text_blocks:
+                self.text = "".join(block.text for block in text_blocks)
+                if len(text_blocks) == 1 and self.text_id is None:
+                    self.text_id = text_blocks[0].item_id
+
+        if not self.tool_calls:
+            self.tool_calls = [
+                block for block in self.content if isinstance(block, ProviderToolCall)
+            ]
+
+        if not self.reasoning_items:
+            self.reasoning_items = [
+                block.raw_item
+                for block in self.content
+                if isinstance(block, AssistantThinkingBlock) and block.raw_item
+            ]
 
 
 @dataclass
@@ -45,6 +145,10 @@ class ToolResultMessage(Message):
 
     tool_call_id: str
     content: str
+    tool_name: str | None = None
+    is_error: bool = False
+    timestamp: int = field(default_factory=_now_ms)
+    details: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -52,8 +156,13 @@ class ProviderResponse:
     """Structured response from the provider after processing a message."""
 
     message: AssistantMessage
-    stop: bool
-    input_tokens: int
+    stop_reason: StopReason
+    input_tokens: int = 0
+
+    @property
+    def stop(self) -> bool:
+        """Backward-compatible boolean stop flag."""
+        return self.stop_reason == "stop"
 
 
 @dataclass
@@ -113,6 +222,65 @@ class Provider(metaclass=ABCMeta):
     @abstractmethod
     def compact(self, messages: list[Message], keep_last: int = 6) -> list[Message]:
         """Compacts a list of messages to reduce token count, keeping the last N messages."""
+
+
+def normalize_messages(messages: list[Message]) -> list[Message]:
+    """Normalize message history before sending it back to a provider.
+
+    - Drops aborted/error assistant turns that should not be replayed.
+    - Inserts synthetic tool results for orphaned tool calls if the conversation
+      continued without a matching tool result.
+    """
+    normalized: list[Message] = []
+    pending_tool_calls: list[ProviderToolCall] = []
+    seen_tool_results: set[str] = set()
+
+    def flush_orphaned_tool_calls() -> None:
+        nonlocal pending_tool_calls, seen_tool_results
+        if not pending_tool_calls:
+            return
+
+        for tool_call in pending_tool_calls:
+            if tool_call.id in seen_tool_results:
+                continue
+            normalized.append(
+                ToolResultMessage(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    content="No result provided",
+                    is_error=True,
+                )
+            )
+
+        pending_tool_calls = []
+        seen_tool_results = set()
+
+    for message in messages:
+        if isinstance(message, AssistantMessage):
+            flush_orphaned_tool_calls()
+
+            if message.stop_reason in ("error", "aborted"):
+                continue
+
+            normalized.append(message)
+            if message.tool_calls:
+                pending_tool_calls = list(message.tool_calls)
+                seen_tool_results = set()
+            continue
+
+        if isinstance(message, ToolResultMessage):
+            seen_tool_results.add(message.tool_call_id)
+            normalized.append(message)
+            continue
+
+        if isinstance(message, UserMessage):
+            flush_orphaned_tool_calls()
+            normalized.append(message)
+            continue
+
+        normalized.append(message)
+
+    return normalized
 
 
 def get_provider(model: str | None, system: str, max_tokens: int | None) -> Provider:

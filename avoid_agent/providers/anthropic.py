@@ -9,6 +9,7 @@ import anthropic
 from avoid_agent.agent.tools import ToolDefinition
 from avoid_agent.providers import (
     AssistantMessage,
+    AssistantTextBlock,
     Message,
     Provider,
     ProviderEvent,
@@ -17,7 +18,19 @@ from avoid_agent.providers import (
     ProviderToolCall,
     ToolResultMessage,
     UserMessage,
+    Usage,
+    normalize_messages,
 )
+
+
+def _map_stop_reason(stop_reason: str | None) -> str:
+    if stop_reason == "tool_use":
+        return "tool_use"
+    if stop_reason == "max_tokens":
+        return "length"
+    if stop_reason in ("end_turn", "stop_sequence", None):
+        return "stop"
+    return "error"
 
 
 class AnthropicStream(ProviderStream):
@@ -41,23 +54,43 @@ class AnthropicStream(ProviderStream):
     def get_final_message(self) -> ProviderResponse:
         final_message = self._stream.get_final_message()
 
-        tool_calls = (
-            []
-            if final_message.stop_reason != "tool_use"
-            else [
-                ProviderToolCall(id=block.id, name=block.name, arguments=block.input)
-                for block in final_message.content
-                if block.type == "tool_use"
-            ]
-        )
+        content = []
+        tool_calls = []
+        for block in final_message.content:
+            if block.type == "text":
+                content.append(AssistantTextBlock(text=block.text))
+            elif block.type == "tool_use":
+                tool_call = ProviderToolCall(
+                    id=block.id,
+                    name=block.name,
+                    arguments=block.input,
+                )
+                tool_calls.append(tool_call)
+                content.append(tool_call)
 
-        text = next(
-            (block.text for block in final_message.content if block.type == "text"),
-            None,
-        )
+        text = "".join(
+            block.text for block in content if isinstance(block, AssistantTextBlock)
+        ) or None
+        stop_reason = _map_stop_reason(final_message.stop_reason)
+        if tool_calls and stop_reason == "stop":
+            stop_reason = "tool_use"
+
         return ProviderResponse(
-            message=AssistantMessage(text=text, tool_calls=tool_calls),
-            stop=final_message.stop_reason == "end_turn",
+            message=AssistantMessage(
+                text=text,
+                tool_calls=tool_calls,
+                content=content,
+                stop_reason=stop_reason,
+                usage=Usage(
+                    input_tokens=final_message.usage.input_tokens,
+                    output_tokens=getattr(final_message.usage, "output_tokens", 0),
+                    total_tokens=(
+                        final_message.usage.input_tokens
+                        + getattr(final_message.usage, "output_tokens", 0)
+                    ),
+                ),
+            ),
+            stop_reason=stop_reason,
             input_tokens=final_message.usage.input_tokens,
         )
 
@@ -72,7 +105,7 @@ class AnthropicProvider(Provider):
     def stream(
         self, messages: list[Message], tools: list[ToolDefinition]
     ) -> ProviderStream:
-        provider_messages = self.__get_provider_messages(messages)
+        provider_messages = self.__get_provider_messages(normalize_messages(messages))
         provider_tools = self.__get_provider_tools(tools)
 
         anthropic_stream = self._client.messages.stream(
@@ -88,7 +121,9 @@ class AnthropicProvider(Provider):
     def compact(self, messages: list[Message], keep_last: int = 6) -> list[Message]:
         """Compacts messages by keeping the last N and summarizing the rest."""
 
-        to_summarize = self.__get_provider_messages(messages[:-keep_last])
+        to_summarize = self.__get_provider_messages(
+            normalize_messages(messages[:-keep_last])
+        )
         recent = messages[-keep_last:]
 
         summary_response = self._client.messages.create(
@@ -136,28 +171,24 @@ class AnthropicProvider(Provider):
             return {"role": "user", "content": message.text}
 
         if isinstance(message, AssistantMessage):
-            has_tool_calls = bool(message.tool_calls)
-            if not has_tool_calls and message.text is not None:
+            content = []
+            for block in message.content:
+                if isinstance(block, AssistantTextBlock):
+                    content.append({"type": "text", "text": block.text})
+                elif isinstance(block, ProviderToolCall):
+                    content.append(
+                        {
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.arguments,
+                        }
+                    )
+
+            if not content and message.text is not None:
                 return {"role": "assistant", "content": message.text}
 
-            tm = {"role": "assistant"}
-            tc = []
-
-            if message.text is not None:
-                tc = [{"type": "text", "text": message.text}]
-
-            for tool_call in message.tool_calls:
-                tc.append(
-                    {
-                        "type": "tool_use",
-                        "id": tool_call.id,
-                        "name": tool_call.name,
-                        "input": tool_call.arguments,
-                    }
-                )
-
-            tm["content"] = tc
-            return tm
+            return {"role": "assistant", "content": content}
 
         raise ValueError(f"Unknown message type: {type(message)}")
 
