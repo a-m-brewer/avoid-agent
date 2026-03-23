@@ -15,23 +15,50 @@ from avoid_agent.providers import (
 _SESSIONS_DIR = Path.home() / ".avoid-agent" / "sessions"
 
 
+def _cwd_key(cwd: str) -> str:
+    return hashlib.sha256(cwd.encode()).hexdigest()[:16]
+
+
+def _repo_dir(cwd: str) -> Path:
+    return _SESSIONS_DIR / _cwd_key(cwd)
+
+
 def session_path(cwd: str) -> Path:
-    key = hashlib.sha256(cwd.encode()).hexdigest()[:16]
-    return _SESSIONS_DIR / f"{key}.json"
+    """Default session file path for backward compatibility."""
+    return _repo_dir(cwd) / "default.json"
 
 
-def save_session(cwd: str, messages: list[Message]) -> None:
-    path = session_path(cwd)
+def session_name_path(cwd: str, name: str) -> Path:
+    safe = _sanitize_session_name(name)
+    return _repo_dir(cwd) / f"{safe}.json"
+
+
+def list_sessions(cwd: str) -> list[str]:
+    repo = _repo_dir(cwd)
+    if not repo.exists():
+        return []
+    return sorted(p.stem for p in repo.glob("*.json") if p.is_file())
+
+
+def save_session(cwd: str, messages: list[Message], name: str = "default") -> None:
+    path = session_name_path(cwd, name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"cwd": cwd, "messages": [_serialize(m) for m in messages]}, indent=2)
+        json.dumps({"cwd": cwd, "name": name, "messages": [_serialize(m) for m in messages]}, indent=2)
     )
 
 
-def load_session(cwd: str) -> list[Message] | None:
-    path = session_path(cwd)
-    if not path.exists():
+def load_session(cwd: str, name: str = "default") -> list[Message] | None:
+    path = session_name_path(cwd, name)
+    if not path.exists() and name == "default":
+        legacy = _SESSIONS_DIR / f"{_cwd_key(cwd)}.json"
+        if legacy.exists():
+            path = legacy
+        else:
+            return None
+    elif not path.exists():
         return None
+
     try:
         raw = json.loads(path.read_text())
         return [_deserialize(m) for m in raw["messages"]]
@@ -39,10 +66,15 @@ def load_session(cwd: str) -> list[Message] | None:
         return None
 
 
-def delete_session(cwd: str) -> None:
-    path = session_path(cwd)
+def delete_session(cwd: str, name: str = "default") -> None:
+    path = session_name_path(cwd, name)
     if path.exists():
         path.unlink()
+
+
+def _sanitize_session_name(name: str) -> str:
+    cleaned = "".join(ch for ch in name.strip().lower() if ch.isalnum() or ch in ("-", "_"))
+    return cleaned or "default"
 
 
 def _serialize(msg: Message) -> dict:

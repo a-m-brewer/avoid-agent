@@ -17,7 +17,7 @@ from avoid_agent.providers import (
 from avoid_agent import providers
 from avoid_agent.agent.tools import run_tool
 from avoid_agent.permissions import command_prefix, load_allowed, save_allowed
-from avoid_agent.session import delete_session, load_session, save_session
+from avoid_agent.session import delete_session, list_sessions, load_session, save_session
 from avoid_agent.prompts import build_system_prompt, export_system_prompt_markdown
 from avoid_agent.prompts.system_prompt import SystemPromptOptions
 from avoid_agent.tui import TUI
@@ -167,7 +167,8 @@ def _run_agent() -> None:
     )
 
     allowed_prefixes = load_allowed()
-    saved = load_session(cwd)
+    active_session = "default"
+    saved = load_session(cwd, active_session)
     if saved is not None:
         messages = saved
         restored = True
@@ -178,24 +179,46 @@ def _run_agent() -> None:
     tui = TUI(model=default_model, on_submit=lambda _: None)
 
     def on_submit(text: str) -> None:
-        nonlocal messages
+        nonlocal messages, active_session
 
         if text.strip() == "/clear":
             messages = gather_initial_context_messages()
-            delete_session(cwd)
+            delete_session(cwd, active_session)
             tui.clear_conversation()
             return
 
         if text.strip() == "/compact":
             try:
                 messages = provider.compact(messages, keep_last=6)
-                save_session(cwd, messages)
+                save_session(cwd, messages, active_session)
                 tui.clear_conversation()
                 for item in messages_to_items(messages):
                     tui.push_item(item)
                 tui.report_info("Conversation compacted.")
             except Exception as e:  # pylint: disable=broad-except
                 tui.report_error(f"Compact failed: {e}")
+            return
+
+        if text.strip() == "/resume":
+            names = list_sessions(cwd)
+            if not names:
+                tui.report_info("No saved sessions for this repo.")
+                return
+            tui.report_info("Saved sessions: " + ", ".join(names) + "\nUse /resume <name>")
+            return
+
+        if text.strip().startswith("/resume "):
+            name = text.strip().split(maxsplit=1)[1]
+            restored_messages = load_session(cwd, name)
+            if restored_messages is None:
+                tui.report_error(f"Session not found: {name}")
+                return
+            active_session = name
+            messages = restored_messages
+            tui.clear_conversation()
+            for item in messages_to_items(messages):
+                tui.push_item(item)
+            tui.report_info(f"Resumed session: {active_session}")
             return
 
         messages_checkpoint = messages[:]
@@ -253,7 +276,7 @@ def _run_agent() -> None:
 
                     if response.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
                         messages = provider.compact(messages, keep_last=6)
-                    save_session(cwd, messages)
+                    save_session(cwd, messages, active_session)
                     break
 
                 for tc in response.message.tool_calls:
