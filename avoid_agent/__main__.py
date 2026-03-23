@@ -1,5 +1,6 @@
 """Main entry point for the Avoid Agent CLI."""
 
+import argparse
 import os
 import subprocess
 
@@ -16,7 +17,8 @@ from avoid_agent import providers
 from avoid_agent.agent.tools import run_tool
 from avoid_agent.permissions import command_prefix, load_allowed, save_allowed
 from avoid_agent.session import delete_session, load_session, save_session
-from avoid_agent.prompts import build_system_prompt
+from avoid_agent.prompts import build_system_prompt, export_system_prompt_markdown
+from avoid_agent.prompts.system_prompt import SystemPromptOptions
 from avoid_agent.tui import TUI
 from avoid_agent.tui.components.conversation import (
     AssistantItem,
@@ -96,7 +98,20 @@ def gather_initial_context_messages() -> list[Message]:
     ]
 
 
-def main():
+def _export_prompt_command(output: str) -> None:
+    cwd, git_status, top_level_structure = gather_initial_context()
+    written = export_system_prompt_markdown(
+        output,
+        options=SystemPromptOptions(
+            working_directory=cwd,
+            git_status=git_status,
+            top_level_file_structure=top_level_structure,
+        ),
+    )
+    print(f"Exported system prompt markdown to: {written}")
+
+
+def _run_agent() -> None:
     load_dotenv()
     default_model = os.getenv("DEFAULT_MODEL", "anthropic/claude-sonnet-4-6")
     max_tokens = int(os.getenv("MAX_TOKENS", "8192"))
@@ -182,6 +197,29 @@ def main():
         for item in messages_to_items(messages):
             tui.push_item(item)
     tui.run()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="avoid-agent")
+    subparsers = parser.add_subparsers(dest="command")
+
+    prompt_parser = subparsers.add_parser("prompt", help="Prompt development utilities")
+    prompt_subparsers = prompt_parser.add_subparsers(dest="prompt_command")
+
+    export_parser = prompt_subparsers.add_parser("export", help="Export system prompt to markdown")
+    export_parser.add_argument(
+        "--out",
+        default="./system-prompt.md",
+        help="Output markdown file path (default: ./system-prompt.md)",
+    )
+
+    args = parser.parse_args()
+
+    if args.command == "prompt" and args.prompt_command == "export":
+        _export_prompt_command(args.out)
+        return
+
+    _run_agent()
 
 
 if __name__ == "__main__":

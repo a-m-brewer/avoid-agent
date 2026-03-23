@@ -52,8 +52,10 @@ def _serialize(msg: Message) -> dict:
         return {
             "type": "assistant",
             "text": msg.text,
+            "text_id": msg.text_id,
+            "reasoning_items": msg.reasoning_items,
             "tool_calls": [
-                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments, "item_id": tc.item_id}
                 for tc in msg.tool_calls
             ],
         }
@@ -69,8 +71,15 @@ def _deserialize(data: dict) -> Message:
     if t == "assistant":
         return AssistantMessage(
             text=data.get("text"),
+            text_id=data.get("text_id"),
+            reasoning_items=data.get("reasoning_items", []),
             tool_calls=[
-                ProviderToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"])
+                ProviderToolCall(
+                    id=tc["id"],
+                    name=tc["name"],
+                    arguments=tc["arguments"],
+                    item_id=tc.get("item_id"),
+                )
                 for tc in data.get("tool_calls", [])
             ],
         )

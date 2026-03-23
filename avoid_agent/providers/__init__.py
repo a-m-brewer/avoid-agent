@@ -1,7 +1,7 @@
 """Module for agent providers."""
 
 from abc import ABCMeta, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from typing import Iterator
 
@@ -14,6 +14,7 @@ class ProviderToolCall:
     id: str
     name: str
     arguments: dict
+    item_id: str | None = None  # Responses API item ID (fc_xxx), separate from call_id
 
 
 @dataclass
@@ -34,6 +35,8 @@ class AssistantMessage(Message):
 
     tool_calls: list[ProviderToolCall]
     text: str | None
+    text_id: str | None = None  # Responses API message item ID for history replay
+    reasoning_items: list[dict] = field(default_factory=list)  # reasoning items for replay
 
 
 @dataclass

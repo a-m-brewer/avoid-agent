@@ -16,3 +16,8 @@ test *args:
 
 run:
     {{venv}} -m avoid_agent
+
+# Export the assembled system prompt as markdown for review.
+# Usage: just prompt-export [output_path]
+prompt-export out="./system-prompt.md":
+    {{venv}} -m avoid_agent prompt export --out {{out}}

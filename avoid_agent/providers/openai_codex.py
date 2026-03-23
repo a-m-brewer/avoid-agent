@@ -1,10 +1,20 @@
 """OpenAI Codex provider — uses ChatGPT Plus/Pro OAuth subscription."""
 
 import json
+import os
 import platform
 from typing import Callable, Iterator
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+
+_DEBUG_LOG = os.getenv("DEBUG_CODEX_EVENTS")  # set to a file path to log all SSE events
+
+
+def _debug_log(event: dict) -> None:
+    if not _DEBUG_LOG:
+        return
+    with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(event) + "\n")
 
 from avoid_agent.agent.tools import ToolDefinition
 from avoid_agent.providers import (
@@ -55,9 +65,14 @@ class CodexStream(ProviderStream):
         self._on_401 = on_401
         self._response = None
         self._text = ""
+        self._text_id: str | None = None
         self._tool_calls: list[ProviderToolCall] = []
+        self._reasoning_items: list[dict] = []
         self._stop = True
         self._input_tokens = 0
+        # Per-item streaming state
+        self._current_item_type: str | None = None
+        self._pending_args = ""
 
     def _open(self) -> None:
         req = self._make_request()
@@ -81,31 +96,70 @@ class CodexStream(ProviderStream):
 
     def text_stream(self) -> Iterator[str]:
         for event in _parse_sse(self._response):
+            _debug_log(event)
             event_type = event.get("type", "")
 
-            if event_type == "response.output_text.delta":
+            if event_type == "response.output_item.added":
+                item = event.get("item", {})
+                self._current_item_type = item.get("type")
+                self._pending_args = ""
+                if self._current_item_type == "function_call":
+                    self._tool_calls.append(
+                        ProviderToolCall(
+                            id=item.get("call_id", item.get("id", "")),
+                            name=item.get("name", ""),
+                            arguments={},
+                            item_id=item.get("id"),
+                        )
+                    )
+
+            elif event_type == "response.output_text.delta":
                 delta = event.get("delta", "")
                 if delta:
                     self._text += delta
                     yield delta
 
+            elif event_type == "response.function_call_arguments.delta":
+                self._pending_args += event.get("delta", "")
+
+            elif event_type == "response.function_call_arguments.done":
+                self._pending_args = event.get("arguments", self._pending_args)
+
+            elif event_type == "response.output_item.done":
+                item = event.get("item", {})
+                itype = item.get("type")
+                if itype == "reasoning":
+                    self._reasoning_items.append(item)
+                elif itype == "message":
+                    self._text_id = item.get("id")
+                elif itype == "function_call" and self._tool_calls:
+                    try:
+                        args = json.loads(self._pending_args or item.get("arguments", "{}"))
+                    except json.JSONDecodeError:
+                        args = {}
+                    self._tool_calls[-1].arguments = args
+                self._current_item_type = None
+
             elif event_type in ("response.completed", "response.done"):
                 response_obj = event.get("response", {})
                 usage = response_obj.get("usage", {})
                 self._input_tokens = usage.get("input_tokens", 0)
-                for item in response_obj.get("output", []):
-                    if item.get("type") == "function_call":
-                        try:
-                            args = json.loads(item.get("arguments", "{}"))
-                        except json.JSONDecodeError:
-                            args = {}
-                        self._tool_calls.append(
-                            ProviderToolCall(
-                                id=item.get("id", ""),
-                                name=item.get("name", ""),
-                                arguments=args,
+                # Fallback: capture tool calls from completed event if streaming missed them
+                if not self._tool_calls:
+                    for item in response_obj.get("output", []):
+                        if item.get("type") == "function_call":
+                            try:
+                                args = json.loads(item.get("arguments", "{}"))
+                            except json.JSONDecodeError:
+                                args = {}
+                            self._tool_calls.append(
+                                ProviderToolCall(
+                                    id=item.get("call_id", item.get("id", "")),
+                                    name=item.get("name", ""),
+                                    arguments=args,
+                                    item_id=item.get("id"),
+                                )
                             )
-                        )
                 self._stop = len(self._tool_calls) == 0
 
             elif event_type == "error":
@@ -117,6 +171,8 @@ class CodexStream(ProviderStream):
             message=AssistantMessage(
                 text=self._text or None,
                 tool_calls=self._tool_calls,
+                text_id=self._text_id,
+                reasoning_items=self._reasoning_items,
             ),
             stop=self._stop,
             input_tokens=self._input_tokens,
@@ -155,6 +211,8 @@ class OpenAICodexProvider(Provider):
             "input": self._convert_messages(messages),
             "tool_choice": "auto",
             "parallel_tool_calls": True,
+            "text": {"verbosity": "medium"},
+            "include": ["reasoning.encrypted_content"],
         }
         if tools:
             body["tools"] = [self._convert_tool(t) for t in tools]
@@ -167,21 +225,33 @@ class OpenAICodexProvider(Provider):
                 result.append({"role": "user", "content": msg.text})
 
             elif isinstance(msg, AssistantMessage):
-                # Text portion (if any)
+                # Replay reasoning items first so the model has its prior thinking context
+                for reasoning_item in msg.reasoning_items:
+                    result.append(reasoning_item)
+
+                # Text portion: include id and status for proper Responses API history format
                 if msg.text:
-                    result.append({
+                    text_item: dict = {
+                        "type": "message",
                         "role": "assistant",
+                        "status": "completed",
                         "content": [{"type": "output_text", "text": msg.text}],
-                    })
-                # Tool calls as separate top-level items
+                    }
+                    if msg.text_id:
+                        text_item["id"] = msg.text_id
+                    result.append(text_item)
+
+                # Tool calls: use item_id for "id" and call_id (tc.id) for "call_id"
                 for tc in msg.tool_calls:
-                    result.append({
+                    fc_item: dict = {
                         "type": "function_call",
-                        "id": tc.id,
                         "call_id": tc.id,
                         "name": tc.name,
                         "arguments": json.dumps(tc.arguments),
-                    })
+                    }
+                    if tc.item_id:
+                        fc_item["id"] = tc.item_id
+                    result.append(fc_item)
 
             elif isinstance(msg, ToolResultMessage):
                 result.append({
