@@ -14,8 +14,9 @@ from avoid_agent.providers import (
 )
 from avoid_agent import providers
 from avoid_agent.agent.tools import run_tool
+from avoid_agent.session import delete_session, load_session, save_session
 from avoid_agent.tui import TUI
-from avoid_agent.tui.components.conversation import ToolCallItem, ToolResultItem
+from avoid_agent.tui.components.conversation import AssistantItem, ToolCallItem, ToolResultItem
 
 CONTEXT_LIMIT = 200_000
 COMPACTION_THRESHOLD = 0.75  # compact at 75% full
@@ -72,16 +73,24 @@ def main():
     provider = providers.get_provider(
         model=default_model, system=system, max_tokens=max_tokens
     )
-    messages = gather_initial_context_messages()
 
-    tui = TUI(model=default_model,
-              on_submit=lambda _: None)
+    cwd = os.getcwd()
+    saved = load_session(cwd)
+    if saved is not None:
+        messages = saved
+        restored = True
+    else:
+        messages = gather_initial_context_messages()
+        restored = False
+
+    tui = TUI(model=default_model, on_submit=lambda _: None)
 
     def on_submit(text: str) -> None:
         nonlocal messages
 
         if text.strip() == "/clear":
             messages = gather_initial_context_messages()
+            delete_session(cwd)
             tui.clear_conversation()
             return
 
@@ -101,6 +110,7 @@ def main():
                 if response.stop:
                     if response.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
                         messages = provider.compact(messages, keep_last=6)
+                    save_session(cwd, messages)
                     break
 
                 for tc in response.message.tool_calls:
@@ -114,6 +124,8 @@ def main():
             tui.report_error(str(e))
 
     tui.on_submit = on_submit
+    if restored:
+        tui.push_item(AssistantItem(text=f"Session restored. ({len(messages)} messages)"))
     tui.run()
 
 
