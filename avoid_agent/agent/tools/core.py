@@ -59,11 +59,6 @@ def edit_file(
 @tool
 def run_bash(command: Annotated[str, "The bash command to run."]) -> str:
     """Run a bash command and return stdout and stderr. Use for running tests, installing packages, checking git status, compiling code, etc."""
-    print(f"\n  $ {command}")
-    confirm = input("  Run this? [y/N]: ").strip().lower()
-    if confirm != "y":
-        return "User denied this command."
-
     result = subprocess.run(
         command,
         shell=True,

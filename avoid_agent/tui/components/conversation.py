@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Union
 
-from avoid_agent.tui.style import bg_user, bold, cyan, yellow, gray
+from avoid_agent.tui.style import bg_user, bold, cyan, yellow, gray, magenta
 
 
 @dataclass
@@ -34,7 +34,15 @@ class ToolResultItem:
     content: str
 
 
-ConversationItem = Union[UserItem, AssistantItem, ToolCallItem, ToolResultItem]
+@dataclass
+class PermissionItem:
+    """Represents a pending or resolved permission prompt for run_bash."""
+
+    command: str
+    result: str = ""  # "" = waiting, "allowed" | "saved" | "denied"
+
+
+ConversationItem = Union[UserItem, AssistantItem, ToolCallItem, ToolResultItem, PermissionItem]
 
 
 class ConversationComponent:
@@ -67,6 +75,14 @@ class ConversationComponent:
             first_line = item.content.splitlines()[0] if item.content else ""
             lines = self._wrap(f"  < {item.name}: {first_line}", width)
             return [gray(l) for l in lines]
+        elif isinstance(item, PermissionItem):
+            cmd_lines = self._wrap(f"  ? run_bash: {item.command}", width)
+            rendered = [magenta(l) for l in cmd_lines]
+            if item.result:
+                rendered.append(gray(f"  {item.result}"))
+            else:
+                rendered.append(magenta("  Allow? [y] once  [s] save  [n] deny"))
+            return rendered
         return []
 
     def _wrap(self, text: str, width: int) -> list[str]:

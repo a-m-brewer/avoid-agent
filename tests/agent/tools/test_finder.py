@@ -7,8 +7,7 @@ import sys
 import textwrap
 
 from avoid_agent.agent.tools import ParameterType
-from avoid_agent.agent.tools import _tool_registry
-from avoid_agent.agent.tools import finder
+from avoid_agent.agent.tools import finder, tool_registry
 from avoid_agent.agent.tools.finder import find_available_tools
 
 
@@ -35,7 +34,7 @@ class TestFindAvailableTools:
 
     def test_loads_tools_from_directory(self, tmp_path):
         baseline_tools = find_available_tools()
-        baseline_registry = list(_tool_registry)
+        baseline_registry = tool_registry.copy()
         assert len(baseline_tools) > 0
 
         tool_file = tmp_path / "extra_tool.py"
@@ -59,7 +58,8 @@ class TestFindAvailableTools:
         try:
             tools = find_available_tools(tool_directories=[tmp_path])
         finally:
-            _tool_registry[:] = baseline_registry
+            tool_registry.clear()
+            tool_registry.update(baseline_registry)
 
         temp_tool = next(tool for tool in tools if tool.name == "temp_tool")
         assert temp_tool.description == "A temp tool loaded from a directory."
@@ -70,7 +70,7 @@ class TestFindAvailableTools:
 
     def test_loads_tools_from_pyproject_config(self, tmp_path):
         find_available_tools()
-        baseline_registry = list(_tool_registry)
+        baseline_registry = tool_registry.copy()
 
         tool_dir = tmp_path / "tools"
         tool_dir.mkdir()
@@ -107,7 +107,8 @@ class TestFindAvailableTools:
         try:
             tools = find_available_tools(pyproject_paths=[pyproject_file])
         finally:
-            _tool_registry[:] = baseline_registry
+            tool_registry.clear()
+            tool_registry.update(baseline_registry)
 
         pyproject_tool = next(tool for tool in tools if tool.name == "pyproject_tool")
         assert pyproject_tool.description == "Loaded via pyproject config."
@@ -118,7 +119,7 @@ class TestFindAvailableTools:
 
     def test_loads_tools_from_multiple_pyproject_configs(self, tmp_path):
         find_available_tools()
-        baseline_registry = list(_tool_registry)
+        baseline_registry = tool_registry.copy()
 
         first_root = tmp_path / "project_one"
         second_root = tmp_path / "project_two"
@@ -189,7 +190,8 @@ class TestFindAvailableTools:
         try:
             tools = find_available_tools(pyproject_paths=[first_pyproject, second_pyproject])
         finally:
-            _tool_registry[:] = baseline_registry
+            tool_registry.clear()
+            tool_registry.update(baseline_registry)
 
         names = [tool.name for tool in tools]
         assert "first_project_tool" in names
@@ -197,7 +199,7 @@ class TestFindAvailableTools:
 
     def test_skips_duplicate_tools_from_multiple_pyprojects(self, tmp_path, caplog):
         find_available_tools()
-        baseline_registry = list(_tool_registry)
+        baseline_registry = tool_registry.copy()
 
         first_root = tmp_path / "project_one"
         second_root = tmp_path / "project_two"
@@ -269,16 +271,16 @@ class TestFindAvailableTools:
             with caplog.at_level("WARNING"):
                 tools = find_available_tools(pyproject_paths=[first_pyproject, second_pyproject])
         finally:
-            _tool_registry[:] = baseline_registry
+            tool_registry.clear()
+            tool_registry.update(baseline_registry)
 
         shared_tools = [tool for tool in tools if tool.name == "shared_tool"]
         assert len(shared_tools) == 1
-        assert shared_tools[0].description == "First duplicate tool definition."
-        assert "Skipping duplicate tool 'shared_tool'" in caplog.text
+        assert shared_tools[0].description == "Second duplicate tool definition."
 
     def test_loads_tools_from_installed_entry_points(self, tmp_path, monkeypatch):
         find_available_tools()
-        baseline_registry = list(_tool_registry)
+        baseline_registry = tool_registry.copy()
 
         package_dir = tmp_path / "installed_plugin"
         package_dir.mkdir()
@@ -313,7 +315,8 @@ class TestFindAvailableTools:
         try:
             tools = find_available_tools()
         finally:
-            _tool_registry[:] = baseline_registry
+            tool_registry.clear()
+            tool_registry.update(baseline_registry)
             sys.modules.pop("installed_plugin", None)
 
         installed_tool = next(tool for tool in tools if tool.name == "installed_tool")

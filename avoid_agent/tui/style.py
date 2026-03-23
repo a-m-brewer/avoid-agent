@@ -22,5 +22,8 @@ def bg_dark(text: str) -> str:
 def bg_status(text: str) -> str:
     return f"\x1b[48;5;234m{text}\x1b[0m"
 
+def magenta(text: str) -> str:
+    return f"\x1b[35m{text}\x1b[0m"
+
 def bg_user(text: str) -> str:
     return f"\x1b[48;5;24m\x1b[97m{text}\x1b[0m"

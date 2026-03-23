@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 
-from avoid_agent.tui.components.conversation import AssistantItem, ConversationComponent, UserItem
+from avoid_agent.tui.components.conversation import AssistantItem, ConversationComponent, PermissionItem, UserItem
 from avoid_agent.tui.components.input_component import InputComponent
 from avoid_agent.tui.components.spinner import SpinnerComponent
 from avoid_agent.tui.components.status_bar import StatusBarComponent
@@ -163,6 +163,32 @@ class TUI:
 
         self._safe_render()
         return False
+
+    def ask_permission(self, command: str) -> str:
+        """Show an inline permission prompt and return 'allow', 'save', or 'deny'."""
+        self._stop_spinner()
+        item = PermissionItem(command=command)
+        self._conversation.items.append(item)
+        self._safe_render()
+
+        while True:
+            data = self._terminal.read_key()
+            key = parse_key(data)
+            if key in ("y", "Y"):
+                item.result = "allowed once"
+                self._safe_render()
+                self._start_spinner()
+                return "allow"
+            if key in ("s", "S"):
+                item.result = "allowed (saved)"
+                self._safe_render()
+                self._start_spinner()
+                return "save"
+            if key in ("n", "N", "ctrl+c", "ctrl+d"):
+                item.result = "denied"
+                self._safe_render()
+                self._start_spinner()
+                return "deny"
 
     # Spinner
     def _start_spinner(self) -> None:
