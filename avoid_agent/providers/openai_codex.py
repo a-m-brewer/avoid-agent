@@ -234,7 +234,7 @@ class CodexStream(ProviderStream):
                     type="status",
                     status=response_obj.get("status", "completed"),
                 )
-                continue
+                break
 
             if event_type == "error":
                 msg = event.get("message") or event.get("code") or json.dumps(event)

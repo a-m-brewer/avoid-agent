@@ -1,5 +1,6 @@
 """Text-based user interface for interacting with the agent in the terminal."""
 
+import os
 import sys
 import threading
 import time
@@ -12,6 +13,13 @@ from avoid_agent.tui.history import History
 from avoid_agent.tui.keys import parse_key
 from avoid_agent.tui.renderer import Renderer
 from avoid_agent.tui.terminal import Terminal
+
+
+def _env_flag(name: str) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class TUI:
@@ -37,14 +45,36 @@ class TUI:
         self._spinner_thread: threading.Thread | None = None
         self._in_paste = False
 
+        self._debug_keys = _env_flag("AVOID_AGENT_DEBUG_KEYS")
+        self._debug_keys_path = os.getenv("AVOID_AGENT_DEBUG_KEYS_PATH", "/tmp/avoid-agent-keys.log")
+
+    def _log_key_debug(self, data: bytes, key: str) -> None:
+        if not self._debug_keys:
+            return
+
+        line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} key={key!r} raw={data!r} hex={data.hex()}\n"
+        try:
+            parent = os.path.dirname(self._debug_keys_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(self._debug_keys_path, "a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError:
+            # Best-effort debugging only.
+            pass
+
+    def _read_parsed_key(self) -> tuple[bytes, str]:
+        data = self._terminal.read_key()
+        key = parse_key(data)
+        self._log_key_debug(data, key)
+        return data, key
 
     def run(self) -> None:
         self._terminal.start()
         try:
             self._safe_render()
             while True:
-                data = self._terminal.read_key()
-                key = parse_key(data)
+                data, key = self._read_parsed_key()
                 if self._handle_key(key, data):
                     break
         finally:
@@ -136,10 +166,8 @@ class TUI:
         self._terminal.move_up(rows_up)
         self._terminal.write("\r")
 
-        # Position cursor within the (possibly wrapped) input line
-        cursor_col = self._input.cursor_col
-        row_in_input = cursor_col // width
-        col_in_row = cursor_col % width
+        # Position cursor within the rendered (possibly multiline, wrapped) input.
+        row_in_input, col_in_row = self._input.cursor_position(width)
         if row_in_input > 0:
             self._terminal.write(f"\x1b[{row_in_input}B")
         if col_in_row > 0:
@@ -169,6 +197,8 @@ class TUI:
                     self._start_spinner()
                     self.on_submit(text)
                     self._stop_spinner()
+        elif key == "shift+enter":
+            self._input.line.insert("\n")
 
         elif key == "backspace":
             self._input.line.backspace()
@@ -211,8 +241,7 @@ class TUI:
         self._safe_render()
 
         while True:
-            data = self._terminal.read_key()
-            key = parse_key(data)
+            _, key = self._read_parsed_key()
             if key in ("y", "Y"):
                 item.result = "allowed once"
                 self._safe_render()
