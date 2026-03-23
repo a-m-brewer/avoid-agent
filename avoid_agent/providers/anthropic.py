@@ -11,6 +11,7 @@ from avoid_agent.providers import (
     AssistantMessage,
     Message,
     Provider,
+    ProviderEvent,
     ProviderResponse,
     ProviderStream,
     ProviderToolCall,
@@ -33,8 +34,9 @@ class AnthropicStream(ProviderStream):
     def __exit__(self, exc_type, exc_val, exc_tb):
         return self._ctx.__exit__(exc_type, exc_val, exc_tb)
 
-    def text_stream(self) -> Iterator[str]:
-        return self._stream.text_stream
+    def event_stream(self) -> Iterator[ProviderEvent]:
+        for delta in self._stream.text_stream:
+            yield ProviderEvent(type="text_delta", text=delta)
 
     def get_final_message(self) -> ProviderResponse:
         final_message = self._stream.get_final_message()

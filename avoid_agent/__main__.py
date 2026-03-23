@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import re
 import subprocess
 
 from dotenv import load_dotenv
@@ -30,6 +31,42 @@ from avoid_agent.tui.components.conversation import (
 
 CONTEXT_LIMIT = 200_000
 COMPACTION_THRESHOLD = 0.75  # compact at 75% full
+
+# Patterns that indicate the model claims it performed file modifications.
+# We require either a first-person subject ("I changed") or a sentence-start
+# past tense ("Implemented the...") to avoid matching passive descriptions
+# like "needs to be refactored".
+_COMPLETION_CLAIM_RE = re.compile(
+    r"("
+    r"(?:^|\.\s+)(?:Implemented|Applied|Edited|Changed|Modified"
+    r"|Updated|Patched|Wired|Refactored|Rewrote)"
+    r"\s+(?:the|a|all|both|this|that|it|now|properly|correctly"
+    r"|successfully|in|to|into|across|with)"
+    r"|I\s+(?:changed|edited|modified|updated|applied|wired"
+    r"|patched|rewrote|implemented|refactored)"
+    r"|✅\s*(?:I\s|What\s|Changed)"
+    r")",
+    re.MULTILINE,
+)
+
+MAX_HALLUCINATION_RETRIES = 2
+
+_HALLUCINATION_CORRECTION = (
+    "[SYSTEM] Your previous response claimed to have made file changes, "
+    "but no tool calls were executed. Text responses cannot modify files. "
+    "You MUST call edit_file, write_file, or run_bash to make changes. "
+    "Do not describe changes as complete until a tool result confirms them. "
+    "Please use your tools now to perform the work."
+)
+
+
+def _looks_like_hallucinated_completion(message: AssistantMessage) -> bool:
+    """Detect when the model claims it made edits but issued no tool calls."""
+    if message.tool_calls:
+        return False
+    if not message.text:
+        return False
+    return bool(_COMPLETION_CLAIM_RE.search(message.text))
 
 
 def gather_initial_context() -> tuple[str, str, str]:
@@ -84,10 +121,10 @@ def messages_to_items(messages: list[Message]) -> list[ConversationItem]:
             if msg.text:
                 items.append(AssistantItem(text=msg.text))
             for tc in msg.tool_calls:
-                items.append(ToolCallItem(name=tc.name, arguments=tc.arguments))
+                items.append(ToolCallItem(id=tc.id, name=tc.name, arguments=tc.arguments))
         elif isinstance(msg, ToolResultMessage):
             name = tool_name_map.get(msg.tool_call_id, "tool")
-            items.append(ToolResultItem(name=name, content=msg.content))
+            items.append(ToolResultItem(id=msg.tool_call_id, name=name, content=msg.content))
     return items
 
 
@@ -151,24 +188,48 @@ def _run_agent() -> None:
         messages_checkpoint = messages[:]
         messages.append(UserMessage(text=text))
 
+        hallucination_retries = 0
+
         try:
             while True:
                 with provider.stream(messages=messages, tools=tool_definitions) as stream:
-                    for chunk in stream.text_stream():
-                        tui.append_chunk(chunk)
+                    for event in stream.event_stream():
+                        if event.type == "text_delta" and event.text:
+                            tui.append_chunk(event.text)
+                        elif event.type == "tool_call_detected" and event.tool_call:
+                            tc_ev = event.tool_call
+                            tui.push_item(ToolCallItem(
+                                id=tc_ev.id,
+                                name=tc_ev.name,
+                                arguments=tc_ev.arguments,
+                            ))
                     response = stream.get_final_message()
                     tui.update_tokens(response.input_tokens)
 
                 messages.append(response.message)
 
                 if response.stop:
+                    if (
+                        _looks_like_hallucinated_completion(response.message)
+                        and hallucination_retries < MAX_HALLUCINATION_RETRIES
+                    ):
+                        hallucination_retries += 1
+                        messages.append(
+                            UserMessage(text=_HALLUCINATION_CORRECTION)
+                        )
+                        tui.report_error(
+                            "Hallucination detected: claimed edits "
+                            "without tool calls. Re-prompting..."
+                        )
+                        continue
+
                     if response.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
                         messages = provider.compact(messages, keep_last=6)
                     save_session(cwd, messages)
                     break
 
                 for tc in response.message.tool_calls:
-                    tui.push_item(ToolCallItem(name=tc.name, arguments=tc.arguments))
+                    tui.push_item(ToolCallItem(id=tc.id, name=tc.name, arguments=tc.arguments))
 
                     if tc.name == "run_bash":
                         cmd = tc.arguments.get("command", "")
@@ -178,7 +239,7 @@ def _run_agent() -> None:
                             if decision == "deny":
                                 result = "User denied this command."
                                 messages.append(ToolResultMessage(tool_call_id=tc.id, content=result))
-                                tui.push_item(ToolResultItem(name=tc.name, content=result))
+                                tui.push_item(ToolResultItem(id=tc.id, name=tc.name, content=result))
                                 continue
                             if decision == "save":
                                 allowed_prefixes.add(prefix)
@@ -186,7 +247,7 @@ def _run_agent() -> None:
 
                     result = run_tool(tc.name, tc.arguments)
                     messages.append(ToolResultMessage(tool_call_id=tc.id, content=result))
-                    tui.push_item(ToolResultItem(name=tc.name, content=result))
+                    tui.push_item(ToolResultItem(id=tc.id, name=tc.name, content=result))
 
         except Exception as e:  # pylint: disable=broad-except
             messages = messages_checkpoint

@@ -10,6 +10,7 @@ from avoid_agent.providers import (
     AssistantMessage,
     Message,
     Provider,
+    ProviderEvent,
     ProviderResponse,
     ProviderStream,
     ProviderToolCall,
@@ -33,10 +34,12 @@ class OpenAIStream(ProviderStream):
     def __exit__(self, exc_type, exc_val, exc_tb):
         return self._ctx.__exit__(exc_type, exc_val, exc_tb)
 
-    def text_stream(self) -> Iterator[str]:
+    def event_stream(self) -> Iterator[ProviderEvent]:
         for event in self._stream:
             if event.type == 'content.delta' and event.delta:
-                yield event.delta
+                yield ProviderEvent(type="text_delta", text=event.delta)
+            else:
+                yield ProviderEvent(type="raw", raw_event={"type": event.type})
 
     def get_final_message(self) -> ProviderResponse:
         final = self._stream.get_final_completion()

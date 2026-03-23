@@ -21,6 +21,7 @@ from avoid_agent.providers import (
     AssistantMessage,
     Message,
     Provider,
+    ProviderEvent,
     ProviderResponse,
     ProviderStream,
     ProviderToolCall,
@@ -94,7 +95,7 @@ class CodexStream(ProviderStream):
         if self._response:
             self._response.close()
 
-    def text_stream(self) -> Iterator[str]:
+    def event_stream(self) -> Iterator[ProviderEvent]:
         for event in _parse_sse(self._response):
             _debug_log(event)
             event_type = event.get("type", "")
@@ -104,32 +105,37 @@ class CodexStream(ProviderStream):
                 self._current_item_type = item.get("type")
                 self._pending_args = ""
                 if self._current_item_type == "function_call":
-                    self._tool_calls.append(
-                        ProviderToolCall(
-                            id=item.get("call_id", item.get("id", "")),
-                            name=item.get("name", ""),
-                            arguments={},
-                            item_id=item.get("id"),
-                        )
+                    tool_call = ProviderToolCall(
+                        id=item.get("call_id", item.get("id", "")),
+                        name=item.get("name", ""),
+                        arguments={},
+                        item_id=item.get("id"),
                     )
+                    self._tool_calls.append(tool_call)
+                    yield ProviderEvent(type="tool_call_detected", tool_call=tool_call)
+                continue
 
-            elif event_type == "response.output_text.delta":
+            if event_type == "response.output_text.delta":
                 delta = event.get("delta", "")
                 if delta:
                     self._text += delta
-                    yield delta
+                    yield ProviderEvent(type="text_delta", text=delta)
+                continue
 
-            elif event_type == "response.function_call_arguments.delta":
+            if event_type == "response.function_call_arguments.delta":
                 self._pending_args += event.get("delta", "")
+                continue
 
-            elif event_type == "response.function_call_arguments.done":
+            if event_type == "response.function_call_arguments.done":
                 self._pending_args = event.get("arguments", self._pending_args)
+                continue
 
-            elif event_type == "response.output_item.done":
+            if event_type == "response.output_item.done":
                 item = event.get("item", {})
                 itype = item.get("type")
                 if itype == "reasoning":
                     self._reasoning_items.append(item)
+                    yield ProviderEvent(type="reasoning_item", reasoning_item=item)
                 elif itype == "message":
                     self._text_id = item.get("id")
                 elif itype == "function_call" and self._tool_calls:
@@ -139,12 +145,12 @@ class CodexStream(ProviderStream):
                         args = {}
                     self._tool_calls[-1].arguments = args
                 self._current_item_type = None
+                continue
 
-            elif event_type in ("response.completed", "response.done"):
+            if event_type in ("response.completed", "response.done"):
                 response_obj = event.get("response", {})
                 usage = response_obj.get("usage", {})
                 self._input_tokens = usage.get("input_tokens", 0)
-                # Fallback: capture tool calls from completed event if streaming missed them
                 if not self._tool_calls:
                     for item in response_obj.get("output", []):
                         if item.get("type") == "function_call":
@@ -152,19 +158,24 @@ class CodexStream(ProviderStream):
                                 args = json.loads(item.get("arguments", "{}"))
                             except json.JSONDecodeError:
                                 args = {}
-                            self._tool_calls.append(
-                                ProviderToolCall(
-                                    id=item.get("call_id", item.get("id", "")),
-                                    name=item.get("name", ""),
-                                    arguments=args,
-                                    item_id=item.get("id"),
-                                )
+                            tool_call = ProviderToolCall(
+                                id=item.get("call_id", item.get("id", "")),
+                                name=item.get("name", ""),
+                                arguments=args,
+                                item_id=item.get("id"),
                             )
+                            self._tool_calls.append(tool_call)
+                            yield ProviderEvent(type="tool_call_detected", tool_call=tool_call)
                 self._stop = len(self._tool_calls) == 0
+                yield ProviderEvent(type="status", status="completed")
+                continue
 
-            elif event_type == "error":
+            if event_type == "error":
                 msg = event.get("message") or event.get("code") or json.dumps(event)
+                yield ProviderEvent(type="error", error=msg)
                 raise RuntimeError(f"Codex error: {msg}")
+
+            yield ProviderEvent(type="raw", raw_event=event)
 
     def get_final_message(self) -> ProviderResponse:
         return ProviderResponse(

@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 
-from avoid_agent.tui.components.conversation import AssistantItem, ConversationComponent, PermissionItem, UserItem
+from avoid_agent.tui.components.conversation import AssistantItem, ConversationComponent, PermissionItem, ToolCallItem, UserItem
 from avoid_agent.tui.components.input_component import InputComponent
 from avoid_agent.tui.components.spinner import SpinnerComponent
 from avoid_agent.tui.components.status_bar import StatusBarComponent
@@ -32,6 +32,7 @@ class TUI:
         # Spinner
         self._spinner = SpinnerComponent()
         self._busy = False
+        self._displayed_tool_ids: set[str] = set()
         self._lock = threading.Lock()
         self._spinner_thread: threading.Thread | None = None
 
@@ -51,8 +52,19 @@ class TUI:
             self._terminal.stop()
 
     def push_item(self, item) -> None:
+        if isinstance(item, ToolCallItem) and item.id:
+            if item.id in self._displayed_tool_ids:
+                return
+            self._displayed_tool_ids.add(item.id)
         self._conversation.items.append(item)
         self._safe_render()
+
+    def update_tool_status(self, tool_call_id: str, status: str) -> None:
+        for item in self._conversation.items:
+            if isinstance(item, ToolCallItem) and item.id == tool_call_id:
+                item.status = status
+                self._safe_render()
+                return
 
     def update_tokens(self, tokens: int) -> None:
         self._status.tokens = tokens
@@ -69,6 +81,7 @@ class TUI:
 
     def clear_conversation(self) -> None:
         self._conversation.items.clear()
+        self._displayed_tool_ids.clear()
         self._safe_render()
 
     def report_error(self, message: str) -> None:
@@ -193,8 +206,14 @@ class TUI:
     # Spinner
     def _start_spinner(self) -> None:
         self._busy = True
+        self._spinner.set_message("thinking...")
         self._spinner_thread = threading.Thread(target=self._spin_loop, daemon=True)
         self._spinner_thread.start()
+
+    def set_spinner_message(self, message: str) -> None:
+        self._spinner.set_message(message)
+        if self._busy:
+            self._safe_render()
 
     def _stop_spinner(self) -> None:
         self._busy = False

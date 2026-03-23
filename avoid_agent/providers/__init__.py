@@ -3,7 +3,7 @@
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
 import os
-from typing import Iterator
+from typing import Iterator, Literal
 
 from avoid_agent.agent.tools import ToolDefinition
 
@@ -56,6 +56,26 @@ class ProviderResponse:
     input_tokens: int
 
 
+@dataclass
+class ProviderEvent:
+    """Structured event emitted while streaming a provider response."""
+
+    type: Literal[
+        "text_delta",
+        "tool_call_detected",
+        "reasoning_item",
+        "status",
+        "error",
+        "raw",
+    ]
+    text: str | None = None
+    tool_call: ProviderToolCall | None = None
+    reasoning_item: dict | None = None
+    status: str | None = None
+    error: str | None = None
+    raw_event: dict | None = None
+
+
 class ProviderStream(metaclass=ABCMeta):
     """Context manager for streaming responses from the provider."""
 
@@ -68,8 +88,8 @@ class ProviderStream(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def text_stream(self) -> Iterator[str]:
-        """Yields text chunks as they are received from the provider."""
+    def event_stream(self) -> Iterator[ProviderEvent]:
+        """Yields structured events as they are received from the provider."""
 
     @abstractmethod
     def get_final_message(self) -> ProviderResponse:

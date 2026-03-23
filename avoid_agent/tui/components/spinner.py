@@ -9,6 +9,9 @@ class SpinnerComponent:
     def tick(self) -> None:
         self._frame = (self._frame + 1) % len(self.FRAMES)
 
+    def set_message(self, message: str) -> None:
+        self.message = message
+
     def render(self, width: int) -> list[str]:
         line = f" {self.FRAMES[self._frame]} {self.message}"
         return [line[:width]]
