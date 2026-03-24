@@ -7,7 +7,7 @@ import subprocess
 from dotenv import load_dotenv
 
 from avoid_agent.agent.context import ContextStrategy
-from avoid_agent.agent.runtime import AgentRuntime, RuntimeEvent
+from avoid_agent.agent.runtime import AgentRuntime, RuntimeEvent, _parse_structured_action
 from avoid_agent.agent.tools.finder import find_available_tools
 from avoid_agent.providers import (
     AssistantMessage,
@@ -67,13 +67,31 @@ def messages_to_items(messages: list[Message]) -> list[ConversationItem]:
             items.append(UserItem(text=msg.text))
         elif isinstance(msg, AssistantMessage):
             if msg.text:
-                items.append(AssistantItem(text=msg.text))
+                items.append(AssistantItem(text=_display_text_for_assistant_message(msg)))
             for tc in msg.tool_calls:
                 items.append(ToolCallItem(id=tc.id, name=tc.name, arguments=tc.arguments))
         elif isinstance(msg, ToolResultMessage):
             name = tool_name_map.get(msg.tool_call_id, "tool")
             items.append(ToolResultItem(id=msg.tool_call_id, name=name, content=msg.content))
     return items
+
+
+def _display_text_for_assistant_message(message: AssistantMessage) -> str:
+    structured = _parse_structured_action(message.text)
+    if structured is None:
+        return message.text or ""
+
+    if structured.tool == "blocker":
+        reason = structured.args.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason
+
+    if structured.tool == "complete":
+        summary = structured.args.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary
+
+    return structured.plan
 
 
 def _export_prompt_command(output: str) -> None:
@@ -155,9 +173,11 @@ def _run_agent() -> None:
             return
 
         if text.strip().startswith("/model"):
+            tui._stop_spinner()
             parts = text.strip().split()
             if len(parts) == 1:
                 picked = tui.pick_from_list("Select model", list_available_models())
+                tui._start_spinner()
                 if picked is None:
                     tui.report_info("Model selection cancelled")
                     return
@@ -276,6 +296,8 @@ def _run_agent() -> None:
                 elif event.type == "validation_error" and event.message:
                     tui.report_error(event.message)
                     tui.reset_spinner_message()
+                elif event.type == "structured_action" and event.message:
+                    tui.replace_last_assistant(event.message)
                 elif event.type == "context_trimmed" and event.message:
                     tui.report_info(event.message)
 
@@ -290,6 +312,10 @@ def _run_agent() -> None:
             )
             result = runtime.run_user_turn(messages, text)
             messages = result.messages
+            if messages and isinstance(messages[-1], AssistantMessage) and messages[-1].text:
+                display_text = _display_text_for_assistant_message(messages[-1])
+                if display_text != messages[-1].text:
+                    tui.replace_last_assistant(display_text)
             tui.update_tokens(result.input_tokens)
             save_session(cwd, messages, active_session)
 

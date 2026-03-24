@@ -243,14 +243,53 @@ def test_runtime_accepts_completion_wrapped_in_extra_text_after_real_tool_use(
     assert target.read_text() == "hello"
 
 
-def test_runtime_reports_malformed_structured_completion_instead_of_hallucinated_success(
+def test_runtime_recovers_truncated_structured_completion_after_real_tool_use(
     tmp_path: Path,
 ):
     target = tmp_path / "runtime-write.txt"
-    malformed_complete = AssistantMessage(
+    truncated_complete = AssistantMessage(
         text=(
             '{"plan":"Stop after verified execution.","action":{"tool":"complete",'
             '"args":{"summary":"ok","evidence":["call_1"]}}'
+        ),
+        stop_reason="stop",
+    )
+    provider = FakeProvider(
+        responses=[
+            _response(
+                AssistantMessage(
+                    tool_calls=[
+                        ProviderToolCall(
+                            id="call_1",
+                            name="write_file",
+                            arguments={"path": str(target), "content": "hello"},
+                        )
+                    ],
+                    stop_reason="tool_use",
+                )
+            ),
+            _response(truncated_complete),
+        ]
+    )
+    runtime = AgentRuntime(
+        provider=provider,
+        tool_definitions=find_available_tools(),
+        allowed_prefixes=set(),
+    )
+
+    result = runtime.run_user_turn([], "please write the file")
+
+    assert provider.calls == 2
+    assert result.messages[-1].stop_reason == "stop"
+    assert target.read_text() == "hello"
+
+
+def test_runtime_reports_irrecoverably_malformed_completion_json(tmp_path: Path):
+    target = tmp_path / "runtime-write.txt"
+    malformed_complete = AssistantMessage(
+        text=(
+            '{"plan":"Stop after verified execution.","action":{"tool":"complete"'
+            '"args":{"summary":"ok","evidence":["call_1"]}}}'
         ),
         stop_reason="stop",
     )
@@ -287,6 +326,105 @@ def test_runtime_reports_malformed_structured_completion_instead_of_hallucinated
     validation_events = [event for event in events if event.type == "validation_error"]
     assert len(validation_events) == 1
     assert "valid JSON object" in validation_events[0].message
+
+
+def test_runtime_executes_structured_json_tool_action_for_real_tool(tmp_path: Path):
+    target = tmp_path / "runtime-write.txt"
+    provider = FakeProvider(
+        responses=[
+            _response(
+                AssistantMessage(
+                    text=json.dumps(
+                        {
+                            "plan": "Write the requested file.",
+                            "action": {
+                                "tool": "write_file",
+                                "args": {"path": str(target), "content": "hello"},
+                            },
+                        }
+                    ),
+                    stop_reason="stop",
+                )
+            ),
+            _response(_complete(["json_action_1"])),
+        ]
+    )
+    events: list[RuntimeEvent] = []
+    runtime = AgentRuntime(
+        provider=provider,
+        tool_definitions=find_available_tools(),
+        allowed_prefixes=set(),
+        on_event=events.append,
+    )
+
+    result = runtime.run_user_turn([], "please write the file")
+
+    assert provider.calls == 2
+    assert target.read_text() == "hello"
+    tool_results = [message for message in result.messages if isinstance(message, ToolResultMessage)]
+    assert len(tool_results) == 1
+    assert tool_results[0].tool_call_id == "json_action_1"
+    structured_events = [event for event in events if event.type == "structured_action"]
+    assert [event.message for event in structured_events] == [
+        "Write the requested file.",
+        "Verified work is complete.",
+    ]
+
+
+def test_runtime_rejects_false_no_tool_access_blocker_and_retries_with_real_tool(
+    tmp_path: Path,
+):
+    target = tmp_path / "runtime-write.txt"
+    provider = FakeProvider(
+        responses=[
+            _response(
+                AssistantMessage(
+                    tool_calls=[
+                        ProviderToolCall(
+                            id="call_1",
+                            name="write_file",
+                            arguments={"path": str(target), "content": "hello"},
+                        )
+                    ],
+                    stop_reason="tool_use",
+                )
+            ),
+            _response(
+                _blocker(
+                    "I cannot run the required verification tools because this turn did not "
+                    "include tool access. Please allow me to run tests."
+                )
+            ),
+            _response(
+                AssistantMessage(
+                    tool_calls=[
+                        ProviderToolCall(
+                            id="call_2",
+                            name="run_bash",
+                            arguments={"command": "echo ok"},
+                        )
+                    ],
+                    stop_reason="tool_use",
+                )
+            ),
+            _response(_complete(["call_1", "call_2"])),
+        ]
+    )
+    events: list[RuntimeEvent] = []
+    runtime = AgentRuntime(
+        provider=provider,
+        tool_definitions=find_available_tools(),
+        allowed_prefixes={"echo"},
+        on_event=events.append,
+    )
+
+    result = runtime.run_user_turn([], "please write the file and verify it")
+
+    assert provider.calls == 4
+    assert result.messages[-1].text == _complete(["call_1", "call_2"]).text
+    validation_events = [event for event in events if event.type == "validation_error"]
+    assert len(validation_events) == 1
+    assert "tool access is available in this turn" in validation_events[0].message
 
 
 def test_runtime_allows_structured_blocker_without_tool_calls():

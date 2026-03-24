@@ -146,6 +146,18 @@ class TUI:
             self._conversation.items.append(AssistantItem(text=message))
         self._safe_render()
 
+    def replace_last_assistant(self, text: str) -> None:
+        """Replace the most recent assistant item, or append one if absent."""
+        if self._conversation.items and isinstance(self._conversation.items[-1], AssistantItem):
+            self._conversation.items[-1].text = text
+        else:
+            self._conversation.items.append(AssistantItem(text=text))
+            self._status.messages = sum(
+                1 for i in self._conversation.items
+                if isinstance(i, (UserItem, AssistantItem))
+            )
+        self._safe_render()
+
     def _safe_render(self) -> None:
         with self._lock:
             self._render()
@@ -308,11 +320,16 @@ class TUI:
             if selected >= len(filtered):
                 selected = max(0, len(filtered) - 1)
 
-            lines = [
-                title,
-                f"Search: {query}",
-                "(type to filter, ↑/↓ to move, Enter to select, Esc/Ctrl+C to cancel)",
-            ]
+            width = self._terminal.columns
+            border = "─" * max(1, width)
+
+            lines = self._conversation.render(width)
+            if lines:
+                lines.append("")
+            lines.append(border)
+            lines.append(title)
+            lines.append(f"Search: {query}")
+            lines.append("(type to filter, ↑/↓ to move, Enter to select, Esc/Ctrl+C to cancel)")
             preview = filtered[:15]
             for i, opt in enumerate(preview):
                 marker = ">" if i == selected else " "
@@ -321,13 +338,14 @@ class TUI:
                 lines.append(f"... and {len(filtered) - len(preview)} more")
             if not filtered:
                 lines.append("(no matches)")
+            lines.append(border)
 
             self._terminal.hide_cursor()
             self._renderer.render(lines)
             self._terminal.show_cursor()
 
             data, key = self._read_parsed_key()
-            if key in ("ctrl+c", "ctrl+d", "esc"):
+            if key in ("ctrl+c", "ctrl+d", "esc", "escape"):
                 return None
             if key == "up":
                 if filtered:

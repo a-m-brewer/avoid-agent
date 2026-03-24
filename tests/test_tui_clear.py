@@ -64,3 +64,15 @@ def test_reset_spinner_message_restores_thinking_label(monkeypatch) -> None:
     tui.reset_spinner_message()
 
     assert tui._spinner.message == "thinking..."
+
+
+def test_replace_last_assistant_updates_existing_item(monkeypatch) -> None:
+    monkeypatch.setattr(tui_module, "Terminal", _FakeTerminal)
+    monkeypatch.setattr(tui_module, "Renderer", _FakeRenderer)
+
+    tui = tui_module.TUI(on_submit=lambda _text: None, model="test")
+    tui.report_info("raw json")
+
+    tui.replace_last_assistant("formatted message")
+
+    assert tui._conversation.items[-1].text == "formatted message"

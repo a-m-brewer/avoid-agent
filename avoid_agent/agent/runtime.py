@@ -26,6 +26,11 @@ _SUCCESS_WITHOUT_EVIDENCE_RE = re.compile(
     r"\b(done|implemented|fixed|completed)\b",
     re.IGNORECASE,
 )
+_TOOL_ACCESS_BLOCKER_RE = re.compile(
+    r"(did not include tool access|no tool access|cannot run .*tool|cannot run .*verification|"
+    r"please allow me to run|allow me to run tests|required verification tools)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -132,6 +137,13 @@ def _decode_structured_json(payload: str) -> dict | None:
         decoded = None
     if isinstance(decoded, dict):
         return decoded
+    for suffix in ("}", "}}", "}}}"):
+        try:
+            decoded = decoder.decode(payload + suffix)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, dict):
+            return decoded
 
     # Common fenced format:
     # ```json
@@ -149,6 +161,13 @@ def _decode_structured_json(payload: str) -> dict | None:
                 decoded = None
             if isinstance(decoded, dict):
                 return decoded
+            for suffix in ("}", "}}", "}}}"):
+                try:
+                    decoded = decoder.decode(fenced_payload + suffix)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, dict):
+                    return decoded
 
     for index, char in enumerate(payload):
         if char != "{":
@@ -156,9 +175,16 @@ def _decode_structured_json(payload: str) -> dict | None:
         try:
             decoded, _end = decoder.raw_decode(payload[index:])
         except json.JSONDecodeError:
-            continue
+            decoded = None
         if isinstance(decoded, dict):
             return decoded
+        for suffix in ("}", "}}", "}}}"):
+            try:
+                decoded, _end = decoder.raw_decode(payload[index:] + suffix)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, dict):
+                return decoded
 
     return None
 
@@ -183,6 +209,18 @@ def _preview(text: str, limit: int = 280) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "..."
+
+
+def _display_text_for_structured_action(structured: StructuredAction) -> str:
+    if structured.tool == "blocker":
+        reason = structured.args.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            return reason
+    if structured.tool == "complete":
+        summary = structured.args.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary
+    return structured.plan
 
 
 class ExecutionController:
@@ -300,6 +338,12 @@ class ExecutionController:
             reason = structured.args.get("reason")
             if not isinstance(reason, str) or not reason.strip():
                 return "Invalid blocker action: args.reason must be a non-empty string."
+            if self._tool_definitions and _TOOL_ACCESS_BLOCKER_RE.search(reason):
+                return (
+                    "Invalid blocker action: tool access is available in this turn. "
+                    "If verification or inspection is needed, call the real tool instead "
+                    "of asking for permission in text."
+                )
             return None
 
         if structured.tool == "complete":
@@ -579,6 +623,7 @@ class AgentRuntime:
         turn_start = len(messages)
         input_tokens = 0
         invalid_step_retries = 0
+        synthetic_tool_call_count = 0
 
         while True:
             context_messages = self._prepare_messages(run_messages, turn_start, text)
@@ -597,6 +642,17 @@ class AgentRuntime:
             if response.message.stop_reason in ("error", "aborted"):
                 break
 
+            structured = None
+            if not response.message.tool_calls:
+                structured = _parse_structured_action(response.message.text)
+                if structured is not None:
+                    self._emit(
+                        RuntimeEvent(
+                            type="structured_action",
+                            message=_display_text_for_structured_action(structured),
+                        )
+                    )
+
             if response.message.tool_calls:
                 plan = self._controller.extract_plan(response.message)
                 for tool_call in response.message.tool_calls:
@@ -604,6 +660,20 @@ class AgentRuntime:
                     tool_result = self._controller.execute_tool_call(tool_call, plan=plan)
                     run_messages.append(tool_result)
                     self._emit(RuntimeEvent(type="tool_result", tool_result=tool_result))
+                invalid_step_retries = 0
+                continue
+
+            if structured is not None and structured.tool not in ("blocker", "complete"):
+                synthetic_tool_call_count += 1
+                tool_call = ProviderToolCall(
+                    id=f"json_action_{synthetic_tool_call_count}",
+                    name=structured.tool,
+                    arguments=structured.args,
+                )
+                self._emit(RuntimeEvent(type="tool_execution_start", tool_call=tool_call))
+                tool_result = self._controller.execute_tool_call(tool_call, plan=structured.plan)
+                run_messages.append(tool_result)
+                self._emit(RuntimeEvent(type="tool_result", tool_result=tool_result))
                 invalid_step_retries = 0
                 continue
 
