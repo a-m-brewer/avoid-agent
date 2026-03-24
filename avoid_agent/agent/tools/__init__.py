@@ -1,6 +1,6 @@
 """Defines tools that the agent can use."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Callable
 
@@ -41,6 +41,14 @@ class ToolDefinition:
     parameters: list[ParamDefinition]
 
 
+@dataclass(slots=True)
+class ToolRunResult:
+    """Structured tool execution output used by the runtime controller."""
+
+    content: str
+    details: dict = field(default_factory=dict)
+
+
 tool_registry: dict[str, Callable] = {}
 
 
@@ -50,10 +58,13 @@ def tool(func):
     return func
 
 
-def run_tool(name: str, arguments: dict) -> str:
+def run_tool(name: str, arguments: dict) -> ToolRunResult:
     """Run a registered tool by name with the given arguments."""
     if name not in tool_registry:
-        return f"Error: Tool '{name}' not found."
+        return ToolRunResult(content=f"Error: Tool '{name}' not found.")
 
     func = tool_registry[name]
-    return func(**arguments)
+    result = func(**arguments)
+    if isinstance(result, ToolRunResult):
+        return result
+    return ToolRunResult(content=str(result))

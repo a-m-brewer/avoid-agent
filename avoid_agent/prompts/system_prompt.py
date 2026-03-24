@@ -157,6 +157,16 @@ def _policy_sections(
         "Writing code in a text response does NOT change any file. "
         "If you have not called a tool, nothing has been implemented.",
     )
+    add_unique(
+        reliability,
+        'If you do not call a tool, respond with JSON only: '
+        '{"plan":"...","action":{"tool":"blocker","args":{"reason":"..."}}} '
+        'or {"plan":"...","action":{"tool":"complete","args":{"summary":"...","evidence":["tool_call_id"]}}}.',
+    )
+    add_unique(
+        reliability,
+        "Never say Done, Implemented, Fixed, or similar completion language unless the complete action cites real evidence.",
+    )
     add_unique(reliability, "Do not fabricate files, command outputs, or test results.")
     add_unique(reliability, "Resolve uncertainty by inspecting code or running commands.")
     add_unique(reliability, "Keep edits minimal and aligned with existing project style.")
@@ -191,6 +201,10 @@ def _default_base_prompt(options: SystemPromptOptions) -> str:
             """
             You run inside a harness with tool-mediated access to the local filesystem and shell.
             You must rely on tool outputs for facts about files, commands, and repository state.
+            During normal task execution, every assistant turn must either call a real tool
+            or return JSON for a `blocker` or `complete` action.
+            If the current user message starts with [INTERNAL SUMMARIZER], ignore that
+            execution contract and return the requested summary directly.
             """,
         ),
         _tools_section(options.selected_tools, options.tool_snippets),
@@ -210,7 +224,8 @@ def _default_base_prompt(options: SystemPromptOptions) -> str:
             "Response Style",
             """
             Be direct and concise while remaining helpful.
-            Finish each response with an evocative haiku.
+            When you are not calling a tool, output JSON only with the required
+            `plan` and `action` fields. Do not add Markdown fences, prose, or a haiku.
             """,
         )
     )

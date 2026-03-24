@@ -6,7 +6,8 @@ import subprocess
 
 from dotenv import load_dotenv
 
-from avoid_agent.agent.runtime import AgentRuntime, RuntimeEvent, _looks_like_hallucinated_completion
+from avoid_agent.agent.context import ContextStrategy
+from avoid_agent.agent.runtime import AgentRuntime, RuntimeEvent
 from avoid_agent.agent.tools.finder import find_available_tools
 from avoid_agent.providers import (
     AssistantMessage,
@@ -15,6 +16,7 @@ from avoid_agent.providers import (
     UserMessage,
 )
 from avoid_agent import providers
+from avoid_agent.providers import list_available_models
 from avoid_agent.permissions import load_allowed, save_allowed
 from avoid_agent.session import delete_session, list_sessions, load_session, save_session
 from avoid_agent.prompts import build_system_prompt, export_system_prompt_markdown
@@ -28,9 +30,6 @@ from avoid_agent.tui.components.conversation import (
     ToolResultItem,
     UserItem,
 )
-
-CONTEXT_LIMIT = 200_000
-COMPACTION_THRESHOLD = 0.75  # compact at 75% full
 
 
 def gather_initial_context() -> tuple[str, str, str]:
@@ -54,22 +53,8 @@ def gather_initial_context() -> tuple[str, str, str]:
     return cwd, git_output, top_level_structure.stdout
 
 
-def format_initial_context(working_directory: str, git_status: str, top_level_structure: str) -> str:
-    """Format initial context as a user message payload."""
-    return (
-        f"Working directory: {working_directory}\n\n"
-        f"Git status:\n{git_status}\n\n"
-        f"Top-level file structure:\n{top_level_structure}"
-    )
-
-
 def messages_to_items(messages: list[Message]) -> list[ConversationItem]:
-    """Reconstruct TUI conversation items from a saved message list.
-
-    Skips the first two messages (initial context exchange) and maps
-    tool_call_id back to tool names via the preceding AssistantMessage.
-    """
-    # Build id -> name lookup from all assistant tool calls
+    """Reconstruct TUI conversation items from a saved message list."""
     tool_name_map: dict[str, str] = {}
     for msg in messages:
         if isinstance(msg, AssistantMessage):
@@ -77,8 +62,7 @@ def messages_to_items(messages: list[Message]) -> list[ConversationItem]:
                 tool_name_map[tc.id] = tc.name
 
     items: list[ConversationItem] = []
-    # Skip the first two messages (initial context + "Understood. Ready.")
-    for msg in messages[2:]:
+    for msg in messages:
         if isinstance(msg, UserMessage):
             items.append(UserItem(text=msg.text))
         elif isinstance(msg, AssistantMessage):
@@ -90,13 +74,6 @@ def messages_to_items(messages: list[Message]) -> list[ConversationItem]:
             name = tool_name_map.get(msg.tool_call_id, "tool")
             items.append(ToolResultItem(id=msg.tool_call_id, name=name, content=msg.content))
     return items
-
-
-def gather_initial_context_messages() -> list[Message]:
-    return [
-        UserMessage(text="Ready for your first task."),
-        AssistantMessage(text="Understood. Ready.", tool_calls=[]),
-    ]
 
 
 def _export_prompt_command(output: str) -> None:
@@ -125,41 +102,95 @@ def _run_agent() -> None:
         top_level_file_structure=top_level_structure,
     )
 
-    provider = providers.get_provider(
-        model=default_model, system=system, max_tokens=max_tokens
-    )
+    active_model = default_model
+
+    def build_provider(model: str):
+        return providers.get_provider(
+            model=model,
+            system=system,
+            max_tokens=max_tokens,
+        )
+
+    provider = build_provider(active_model)
+
+    valid_strategies: set[ContextStrategy] = {"window", "compact", "compact+window"}
+    env_strategy = os.getenv("CONTEXT_STRATEGY", "compact+window")
+    if env_strategy not in valid_strategies:
+        env_strategy = "compact+window"
+    context_strategy: ContextStrategy = env_strategy  # type: ignore[assignment]
 
     allowed_prefixes = load_allowed()
     active_session = "default"
     saved = load_session(cwd, active_session)
     if saved is not None:
-        messages = saved
+        messages: list[Message] = saved
         restored = True
     else:
-        messages = gather_initial_context_messages()
+        messages: list[Message] = []
         restored = False
 
-    tui = TUI(model=default_model, on_submit=lambda _: None)
+    tui = TUI(model=active_model, on_submit=lambda _: None)
 
     def on_submit(text: str) -> None:
-        nonlocal messages, active_session
+        nonlocal messages, active_session, context_strategy, provider, active_model
 
-        if text.strip() == "/clear":
-            messages = gather_initial_context_messages()
-            delete_session(cwd, active_session)
-            tui.clear_conversation()
+        if text.strip() == "/strategy":
+            tui.report_info(
+                f"Current strategy: {context_strategy}\n"
+                f"Options: {', '.join(sorted(valid_strategies))}\n"
+                f"Use /strategy <name> to switch."
+            )
             return
 
-        if text.strip() == "/compact":
+        if text.strip().startswith("/strategy "):
+            new_strategy = text.strip().split(maxsplit=1)[1]
+            if new_strategy not in valid_strategies:
+                tui.report_error(
+                    f"Unknown strategy: {new_strategy}. "
+                    f"Options: {', '.join(sorted(valid_strategies))}"
+                )
+                return
+            context_strategy = new_strategy  # type: ignore[assignment]
+            tui.report_info(f"Context strategy set to: {context_strategy}")
+            return
+
+        if text.strip().startswith("/model"):
+            parts = text.strip().split()
+            if len(parts) == 1:
+                picked = tui.pick_from_list("Select model", list_available_models())
+                if picked is None:
+                    tui.report_info("Model selection cancelled")
+                    return
+                new_model = picked
+            elif len(parts) == 2:
+                new_model = parts[1]
+            elif len(parts) >= 3:
+                new_model = f"{parts[1]}/{' '.join(parts[2:]).strip()}"
+            else:
+                tui.report_error("Usage: /model [provider/model] or /model <provider> <model>")
+                return
+
+            if "/" not in new_model:
+                tui.report_error("Model must include provider prefix (example: anthropic/claude-sonnet-4-6)")
+                return
+
+            previous_model = active_model
+            previous_provider = provider
             try:
-                messages = provider.compact(messages, keep_last=6)
-                save_session(cwd, messages, active_session)
-                tui.clear_conversation()
-                for item in messages_to_items(messages):
-                    tui.push_item(item)
-                tui.report_info("Conversation compacted.")
+                provider = build_provider(new_model)
+                active_model = new_model
+                tui.set_model(active_model)
+                tui.report_info(f"Switched model to: {active_model}")
             except Exception as e:  # pylint: disable=broad-except
-                tui.report_error(f"Compact failed: {e}")
+                provider = previous_provider
+                active_model = previous_model
+                tui.report_error(f"Failed to switch model: {e}")
+            return
+
+        if text.strip() == "/clear":
+            messages = []
+            delete_session(cwd, active_session)
+            tui.clear_conversation()
             return
 
         if text.strip() == "/resume":
@@ -216,6 +247,7 @@ def _run_agent() -> None:
                         tui.set_spinner_message(provider_event.status)
                     elif provider_event.type == "error" and provider_event.error:
                         tui.report_error(provider_event.error)
+                        tui.reset_spinner_message()
                 elif event.type == "tool_execution_start" and event.tool_call:
                     tool_call = event.tool_call
                     tui.push_item(
@@ -240,8 +272,12 @@ def _run_agent() -> None:
                             status=status,
                         )
                     )
+                    tui.reset_spinner_message()
                 elif event.type == "validation_error" and event.message:
                     tui.report_error(event.message)
+                    tui.reset_spinner_message()
+                elif event.type == "context_trimmed" and event.message:
+                    tui.report_info(event.message)
 
             runtime = AgentRuntime(
                 provider=provider,
@@ -250,13 +286,11 @@ def _run_agent() -> None:
                 request_permission=tui.ask_permission,
                 save_allowed_prefixes=save_allowed,
                 on_event=handle_runtime_event,
+                context_strategy=context_strategy,
             )
             result = runtime.run_user_turn(messages, text)
             messages = result.messages
             tui.update_tokens(result.input_tokens)
-
-            if result.input_tokens > CONTEXT_LIMIT * COMPACTION_THRESHOLD:
-                messages = provider.compact(messages, keep_last=6)
             save_session(cwd, messages, active_session)
 
         except Exception as e:  # pylint: disable=broad-except

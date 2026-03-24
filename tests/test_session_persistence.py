@@ -21,6 +21,12 @@ def test_save_and_load_round_trip_with_structured_messages(tmp_path, monkeypatch
             tool_name="edit_file",
             content="Edit applied to x",
             timestamp=3,
+            details={
+                "plan": "Apply the edit.",
+                "action": {"tool": "edit_file", "args": {"path": "x"}},
+                "proof": {"kind": "file_change", "path": "x", "changed": True},
+                "verification": {"status": "verified", "message": "Edited x."},
+            },
         ),
     ]
 
@@ -32,6 +38,7 @@ def test_save_and_load_round_trip_with_structured_messages(tmp_path, monkeypatch
     assert loaded[1].stop_reason == "tool_use"
     assert loaded[1].tool_calls[0].name == "edit_file"
     assert loaded[2].tool_name == "edit_file"
+    assert loaded[2].details["verification"]["status"] == "verified"
 
 
 def test_load_session_migrates_legacy_flat_schema(tmp_path, monkeypatch):

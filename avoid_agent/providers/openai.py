@@ -15,6 +15,7 @@ from avoid_agent.providers import (
     ProviderResponse,
     ProviderStream,
     ProviderToolCall,
+    ToolChoice,
     ToolResultMessage,
     UserMessage,
     Usage,
@@ -117,47 +118,25 @@ class OpenAIProvider(Provider):
         )
 
     def stream(
-        self, messages: list[Message], tools: list[ToolDefinition]
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition],
+        tool_choice: ToolChoice = "auto",
     ) -> ProviderStream:
         provider_messages = self.__get_provider_messages(normalize_messages(messages))
         provider_tools = self.__get_provider_tools(tools)
 
-        openai_stream = self._client.chat.completions.stream(
-            model=self.model,
-            max_completion_tokens=self.max_tokens,
-            messages=provider_messages,
-            tools=provider_tools,
-        )
+        kwargs: dict = {
+            "model": self.model,
+            "max_completion_tokens": self.max_tokens,
+            "messages": provider_messages,
+            "tools": provider_tools,
+        }
+        if tool_choice != "auto" and provider_tools:
+            kwargs["tool_choice"] = tool_choice
 
+        openai_stream = self._client.chat.completions.stream(**kwargs)
         return OpenAIStream(openai_stream)
-
-    def compact(self, messages: list[Message], keep_last: int = 6) -> list[Message]:
-        """Compacts messages by keeping the last N and summarizing the rest."""
-
-        to_summarize = self.__get_provider_messages(
-            normalize_messages(messages[:-keep_last])
-        )
-        recent = messages[-keep_last:]
-
-        summary_response = self._client.chat.completions.create(
-            model=self.model,
-            max_completion_tokens=self.max_tokens,
-            messages=[
-                *to_summarize,
-                {
-                    "role": "user",
-                    "content": "Summarize this conversation so far. Include: what the user asked for, what was explored, what changes were made, and any important findings. Be concise but complete.",
-                },
-            ],
-        )
-
-        summary_text = summary_response.choices[0].message.content.strip()
-
-        return [
-            UserMessage(text=f"[Conversation summary]\n{summary_text}"),
-            AssistantMessage(text="Understood.", tool_calls=[]),
-            *recent,
-        ]
 
     def __get_provider_messages(self, messages: list[Message]) -> list[dict]:
         return [

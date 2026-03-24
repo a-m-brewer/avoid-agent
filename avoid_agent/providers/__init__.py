@@ -10,6 +10,41 @@ from typing import Iterator, Literal, TypeAlias
 
 from avoid_agent.agent.tools import ToolDefinition
 
+
+AVAILABLE_MODELS: dict[str, list[str]] = {
+    "anthropic": [
+        "claude-sonnet-4-6",
+        "claude-opus-4-1",
+        "claude-haiku-4-5",
+    ],
+    "openai": [
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-nano",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+    ],
+    "openai-codex": [
+        "codex-mini-latest",
+    ],
+    "openrouter": [
+        "openai/gpt-5",
+        "anthropic/claude-sonnet-4-6",
+    ],
+}
+
+
+def list_available_models() -> list[str]:
+    """Return known models in provider/model format for model picker UX."""
+    out: list[str] = []
+    for provider_name, models in AVAILABLE_MODELS.items():
+        out.extend(f"{provider_name}/{model}" for model in models)
+    return sorted(out)
+
+# tool_choice controls whether the model must call a tool.
+# "auto" = model decides, "required" = must call a tool, "none" = no tools
+ToolChoice: TypeAlias = Literal["auto", "required", "none"]
+
 StopReason: TypeAlias = Literal["stop", "tool_use", "length", "error", "aborted"]
 
 
@@ -215,13 +250,12 @@ class Provider(metaclass=ABCMeta):
 
     @abstractmethod
     def stream(
-        self, messages: list[Message], tools: list[ToolDefinition]
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition],
+        tool_choice: ToolChoice = "auto",
     ) -> ProviderStream:
         """Sends messages to the provider and returns a stream of responses."""
-
-    @abstractmethod
-    def compact(self, messages: list[Message], keep_last: int = 6) -> list[Message]:
-        """Compacts a list of messages to reduce token count, keeping the last N messages."""
 
 
 def normalize_messages(messages: list[Message]) -> list[Message]:

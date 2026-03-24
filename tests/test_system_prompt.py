@@ -51,6 +51,8 @@ def test_default_prompt_has_split_policy_sections():
     assert "## Operational Policy" in prompt
     assert "## Planning & Reporting" in prompt
     assert "## Reliability Constraints" in prompt
+    assert '"action":{"tool":"blocker"' in prompt
+    assert '"action":{"tool":"complete"' in prompt
 
 
 def test_identity_mentions_avoid_agent_and_its_codebase():
@@ -58,6 +60,7 @@ def test_identity_mentions_avoid_agent_and_its_codebase():
 
     assert "You are Avoid Agent (avoid_agent)" in prompt
     assert "operating on the avoid_agent codebase" in prompt
+    assert "[INTERNAL SUMMARIZER]" in prompt
 
 
 def test_custom_prompt_and_append_and_project_context():

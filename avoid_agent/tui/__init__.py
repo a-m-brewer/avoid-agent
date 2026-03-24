@@ -106,6 +106,10 @@ class TUI:
         self._status.tokens = tokens
         self._safe_render()
 
+    def set_model(self, model: str) -> None:
+        self._status.model = model
+        self._safe_render()
+
     def append_chunk(self, text: str) -> None:
         if self._conversation.items and isinstance(
             self._conversation.items[-1], AssistantItem
@@ -123,6 +127,7 @@ class TUI:
         self._conversation.items.clear()
         self._displayed_tool_ids.clear()
         self._status.messages = 0
+        self._status.tokens = 0
         self._safe_render()
 
     def report_error(self, message: str) -> None:
@@ -270,6 +275,11 @@ class TUI:
         if self._busy:
             self._safe_render()
 
+    def reset_spinner_message(self) -> None:
+        self._spinner.set_message("thinking...")
+        if self._busy:
+            self._safe_render()
+
     def _stop_spinner(self) -> None:
         self._busy = False
         if self._spinner_thread:
@@ -282,3 +292,60 @@ class TUI:
             self._spinner.tick()
             self._safe_render()
             time.sleep(0.1)
+
+
+    def pick_from_list(self, title: str, options: list[str]) -> str | None:
+        """Interactive searchable picker. Returns selected option or None if cancelled."""
+        if not options:
+            self.report_error("No options available.")
+            return None
+
+        query = ""
+        selected = 0
+
+        while True:
+            filtered = [opt for opt in options if query.lower() in opt.lower()]
+            if selected >= len(filtered):
+                selected = max(0, len(filtered) - 1)
+
+            lines = [
+                title,
+                f"Search: {query}",
+                "(type to filter, ↑/↓ to move, Enter to select, Esc/Ctrl+C to cancel)",
+            ]
+            preview = filtered[:15]
+            for i, opt in enumerate(preview):
+                marker = ">" if i == selected else " "
+                lines.append(f"{marker} {opt}")
+            if len(filtered) > len(preview):
+                lines.append(f"... and {len(filtered) - len(preview)} more")
+            if not filtered:
+                lines.append("(no matches)")
+
+            self._terminal.hide_cursor()
+            self._renderer.render(lines)
+            self._terminal.show_cursor()
+
+            data, key = self._read_parsed_key()
+            if key in ("ctrl+c", "ctrl+d", "esc"):
+                return None
+            if key == "up":
+                if filtered:
+                    selected = max(0, selected - 1)
+                continue
+            if key == "down":
+                if filtered:
+                    selected = min(len(filtered) - 1, selected + 1)
+                continue
+            if key == "enter":
+                if filtered:
+                    return filtered[selected]
+                continue
+            if key == "backspace":
+                if query:
+                    query = query[:-1]
+                continue
+            if len(key) == 1 and key.isprintable():
+                query += key
+                selected = 0
+                continue

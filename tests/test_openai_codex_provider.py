@@ -1,5 +1,6 @@
 """Tests for the OpenAI Codex provider parser."""
 
+import json
 from urllib.request import Request
 
 from avoid_agent.providers.openai_codex import CodexStream
@@ -94,3 +95,33 @@ def test_codex_stream_finishes_after_response_completed_even_if_connection_stays
     assert any(event.type == "status" for event in events)
     assert final.stop_reason == "tool_use"
     assert final.message.tool_calls[0].name == "write_file"
+
+
+def test_codex_stream_recovers_missing_text_suffix_from_final_message_item(monkeypatch):
+    json_text = (
+        '{"plan":"Stop after verified execution.","action":{"tool":"complete",'
+        '"args":{"summary":"ok","evidence":["call_1"]}}}'
+    )
+    truncated_delta = json_text[:-1]
+    sse = "\n\n".join(
+        [
+            'data: {"type":"response.output_item.added","item":{"type":"message","id":"msg_1"}}',
+            f'data: {{"type":"response.output_text.delta","delta":{json.dumps(truncated_delta)}}}',
+            f'data: {{"type":"response.output_item.done","item":{{"type":"message","id":"msg_1","content":[{{"type":"output_text","text":{json.dumps(json_text)}}}]}}}}',
+            f'data: {{"type":"response.completed","response":{{"status":"completed","usage":{{"input_tokens":5,"output_tokens":3,"total_tokens":8}},"output":[{{"type":"message","id":"msg_1","content":[{{"type":"output_text","text":{json.dumps(json_text)}}}]}}]}}}}',
+            "",
+        ]
+    ).encode()
+
+    monkeypatch.setattr(
+        "avoid_agent.providers.openai_codex.urlopen",
+        lambda request, timeout: FakeHTTPResponse(sse),
+    )
+
+    with CodexStream(lambda: Request("https://example.com")) as stream:
+        events = list(stream.event_stream())
+        final = stream.get_final_message()
+
+    streamed_text = "".join(event.text or "" for event in events if event.type == "text_delta")
+    assert streamed_text == json_text
+    assert final.message.text == json_text

@@ -28,6 +28,7 @@ from avoid_agent.providers import (
     ProviderStream,
     ProviderToolCall,
     StopReason,
+    ToolChoice,
     ToolResultMessage,
     UserMessage,
     Usage,
@@ -104,6 +105,50 @@ class CodexStream(ProviderStream):
         self._current_text_block: AssistantTextBlock | None = None
         self._current_tool_call: ProviderToolCall | None = None
         self._current_thinking_block: AssistantThinkingBlock | None = None
+
+    @staticmethod
+    def _message_text_from_item(item: dict) -> tuple[str | None, str]:
+        item_id = item.get("id")
+        text = "".join(
+            str(part.get("text", ""))
+            for part in item.get("content", [])
+            if isinstance(part, dict) and part.get("type") == "output_text"
+        )
+        return item_id, text
+
+    def _sync_message_text(self, item: dict) -> str:
+        """Reconcile a streamed text block with the provider's final item content.
+
+        The streaming deltas can miss a trailing suffix. When the authoritative
+        item content is available, update the stored block and return any missing
+        suffix so the UI can catch up without duplicating prior text.
+        """
+        item_id, final_text = self._message_text_from_item(item)
+        if not final_text:
+            return ""
+
+        text_block: AssistantTextBlock | None = None
+        if item_id:
+            for block in self._content:
+                if isinstance(block, AssistantTextBlock) and block.item_id == item_id:
+                    text_block = block
+                    break
+
+        if text_block is None and self._current_text_block is not None:
+            text_block = self._current_text_block
+
+        if text_block is None:
+            text_block = AssistantTextBlock(text="", item_id=item_id)
+            self._content.append(text_block)
+
+        if item_id and text_block.item_id is None:
+            text_block.item_id = item_id
+
+        previous_text = text_block.text
+        text_block.text = final_text
+        if final_text.startswith(previous_text):
+            return final_text[len(previous_text):]
+        return ""
 
     def _open(self) -> None:
         req = self._make_request()
@@ -184,14 +229,9 @@ class CodexStream(ProviderStream):
                     yield ProviderEvent(type="reasoning_item", reasoning_item=item)
                     self._current_thinking_block = None
                 elif itype == "message" and self._current_text_block is not None:
-                    self._current_text_block.item_id = item.get("id")
-                    if not self._current_text_block.text:
-                        content = item.get("content", [])
-                        self._current_text_block.text = "".join(
-                            str(part.get("text", ""))
-                            for part in content
-                            if isinstance(part, dict) and part.get("type") == "output_text"
-                        )
+                    missing_suffix = self._sync_message_text(item)
+                    if missing_suffix:
+                        yield ProviderEvent(type="text_delta", text=missing_suffix)
                     self._current_text_block = None
                 elif itype == "function_call" and self._current_tool_call is not None:
                     try:
@@ -211,6 +251,11 @@ class CodexStream(ProviderStream):
                     output_tokens=usage.get("output_tokens", 0),
                     total_tokens=usage.get("total_tokens", 0),
                 )
+                for item in response_obj.get("output", []):
+                    if item.get("type") == "message":
+                        missing_suffix = self._sync_message_text(item)
+                        if missing_suffix:
+                            yield ProviderEvent(type="text_delta", text=missing_suffix)
                 if not self._tool_calls:
                     for item in response_obj.get("output", []):
                         if item.get("type") == "function_call":
@@ -285,14 +330,19 @@ class OpenAICodexProvider(Provider):
             "Content-Type": "application/json",
         }
 
-    def _build_body(self, messages: list[Message], tools: list[ToolDefinition]) -> dict:
+    def _build_body(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition],
+        tool_choice: ToolChoice = "auto",
+    ) -> dict:
         body: dict = {
             "model": self.model,
             "store": False,
             "stream": True,
             "instructions": self.system,
             "input": self._convert_messages(normalize_messages(messages)),
-            "tool_choice": "auto",
+            "tool_choice": tool_choice if tools else "none",
             "parallel_tool_calls": True,
             "text": {"verbosity": "medium"},
             "include": ["reasoning.encrypted_content"],
@@ -386,60 +436,15 @@ class OpenAICodexProvider(Provider):
             },
         }
 
-    def stream(self, messages: list[Message], tools: list[ToolDefinition]) -> ProviderStream:
-        body = self._build_body(messages, tools)
+    def stream(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition],
+        tool_choice: ToolChoice = "auto",
+    ) -> ProviderStream:
+        body = self._build_body(messages, tools, tool_choice)
         body_bytes = json.dumps(body).encode()
         return CodexStream(
             make_request=lambda: Request(CODEX_URL, data=body_bytes, headers=self._build_headers(), method="POST"),
             on_401=self._refresh_auth,
         )
-
-    def compact(self, messages: list[Message], keep_last: int = 6) -> list[Message]:
-        """Summarise older messages via a streaming Codex request."""
-        to_summarize = self._convert_messages(normalize_messages(messages[:-keep_last]))
-        to_summarize.append({
-            "role": "user",
-            "content": (
-                "Summarize this conversation so far. Include: what the user "
-                "asked for, what was explored, what changes were made, and "
-                "any important findings. Be concise but complete."
-            ),
-        })
-
-        body = {
-            "model": self.model,
-            "store": False,
-            "stream": True,
-            "instructions": self.system,
-            "input": to_summarize,
-        }
-        body_bytes = json.dumps(body).encode()
-
-        req = Request(
-            CODEX_URL,
-            data=body_bytes,
-            headers=self._build_headers(),
-            method="POST",
-        )
-        try:
-            with urlopen(req, timeout=_STREAM_TIMEOUT) as resp:
-                summary_parts: list[str] = []
-                for event in _parse_sse(resp):
-                    etype = event.get("type", "")
-                    if etype == "response.output_text.delta":
-                        summary_parts.append(event.get("delta", ""))
-                summary_text = "".join(summary_parts)
-        except HTTPError as e:
-            error_body = e.read().decode(errors="replace") if e.fp else ""
-            raise RuntimeError(
-                f"Codex compact failed ({e.code}): {error_body[:500]}"
-            ) from e
-
-        if not summary_text.strip():
-            raise RuntimeError("Codex compact returned empty summary")
-
-        return [
-            UserMessage(text=f"[Conversation summary]\n{summary_text}"),
-            AssistantMessage(text="Understood.", tool_calls=[]),
-            *messages[-keep_last:],
-        ]

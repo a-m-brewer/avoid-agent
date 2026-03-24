@@ -16,6 +16,7 @@ from avoid_agent.providers import (
     ProviderResponse,
     ProviderStream,
     ProviderToolCall,
+    ToolChoice,
     ToolResultMessage,
     UserMessage,
     Usage,
@@ -103,48 +104,26 @@ class AnthropicProvider(Provider):
         self._client = Anthropic()
 
     def stream(
-        self, messages: list[Message], tools: list[ToolDefinition]
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition],
+        tool_choice: ToolChoice = "auto",
     ) -> ProviderStream:
         provider_messages = self.__get_provider_messages(normalize_messages(messages))
         provider_tools = self.__get_provider_tools(tools)
 
-        anthropic_stream = self._client.messages.stream(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=self.system,
-            tools=provider_tools,
-            messages=provider_messages,
-        )
+        kwargs: dict = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "system": self.system,
+            "tools": provider_tools,
+            "messages": provider_messages,
+        }
+        if tool_choice != "auto" and provider_tools:
+            kwargs["tool_choice"] = {"type": "any" if tool_choice == "required" else tool_choice}
 
+        anthropic_stream = self._client.messages.stream(**kwargs)
         return AnthropicStream(ctx=anthropic_stream)
-
-    def compact(self, messages: list[Message], keep_last: int = 6) -> list[Message]:
-        """Compacts messages by keeping the last N and summarizing the rest."""
-
-        to_summarize = self.__get_provider_messages(
-            normalize_messages(messages[:-keep_last])
-        )
-        recent = messages[-keep_last:]
-
-        summary_response = self._client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            messages=[
-                *to_summarize,
-                {
-                    "role": "user",
-                    "content": "Summarize this conversation so far. Include: what the user asked for, what was explored, what changes were made, and any important findings. Be concise but complete.",
-                },
-            ],
-        )
-
-        summary_text = summary_response.content[0].text
-
-        return [
-            UserMessage(text=f"[Conversation summary]\n{summary_text}"),
-            AssistantMessage(text="Understood.", tool_calls=[]),
-            *recent,
-        ]
 
     def __get_provider_messages(self, messages: list[Message]) -> list[dict]:
         result = []
