@@ -1,5 +1,7 @@
 """Tool functions that the agent can use."""
 
+import importlib.util
+import logging
 import os
 import subprocess
 from difflib import unified_diff
@@ -9,6 +11,8 @@ from pathlib import Path
 from typing_extensions import Annotated
 
 from avoid_agent.agent.tools import ToolRunResult, tool
+
+logger = logging.getLogger(__name__)
 
 _PREVIEW_LIMIT = 1200
 _DIFF_LIMIT = 4000
@@ -34,6 +38,44 @@ def _diff_preview(path: str, before: str, after: str) -> str:
         )
     )
     return _preview(diff, _DIFF_LIMIT)
+
+
+def _load_tool_module(module_path: Path) -> None:
+    module_name = f"avoid_agent_extensions_{module_path.stem}_{abs(hash(module_path.resolve()))}"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        logger.warning("Skipping extension module '%s': unable to load module spec", module_path)
+        return
+
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception("Failed to load extension module '%s'", module_path)
+
+
+def _extension_directories() -> list[Path]:
+    configured = os.environ.get("AVOID_AGENT_EXTENSIONS_DIRS")
+    if configured:
+        return [Path(path).expanduser() for path in configured.split(os.pathsep) if path]
+    return [Path(__file__).resolve().parents[3] / "extensions"]
+
+
+def _discover_extension_tools() -> None:
+    for extensions_dir in _extension_directories():
+        if not extensions_dir.is_dir():
+            continue
+
+        for child in sorted(extensions_dir.iterdir()):
+            if child.is_file() and child.suffix == ".py" and child.name != "__init__.py":
+                _load_tool_module(child)
+                continue
+
+            if child.is_dir() and (child / "__init__.py").is_file():
+                _load_tool_module(child / "__init__.py")
+
+
+_discover_extension_tools()
 
 
 @tool

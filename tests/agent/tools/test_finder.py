@@ -278,6 +278,49 @@ class TestFindAvailableTools:
         assert len(shared_tools) == 1
         assert shared_tools[0].description == "Second duplicate tool definition."
 
+    def test_loads_tools_from_extensions_directory(self, tmp_path, monkeypatch):
+        find_available_tools()
+        baseline_registry = tool_registry.copy()
+
+        extensions_dir = tmp_path / "extensions"
+        extension_package = extensions_dir / "sample_extension"
+        extension_package.mkdir(parents=True)
+
+        (extension_package / "__init__.py").write_text(
+            textwrap.dedent(
+                """
+                from typing_extensions import Annotated
+
+                from avoid_agent.agent.tools import tool
+
+
+                @tool
+                def extension_directory_tool(value: Annotated[str, "A value"]) -> str:
+                    \"\"\"Loaded from extensions/ auto-discovery.\"\"\"
+                    return value
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("AVOID_AGENT_EXTENSIONS_DIRS", str(extensions_dir))
+        sys.modules.pop("avoid_agent.agent.tools.core", None)
+
+        try:
+            tools = find_available_tools()
+        finally:
+            monkeypatch.delenv("AVOID_AGENT_EXTENSIONS_DIRS", raising=False)
+            sys.modules.pop("avoid_agent.agent.tools.core", None)
+            tool_registry.clear()
+            tool_registry.update(baseline_registry)
+
+        extension_tool = next(tool for tool in tools if tool.name == "extension_directory_tool")
+        assert extension_tool.description == "Loaded from extensions/ auto-discovery."
+        assert len(extension_tool.parameters) == 1
+        assert extension_tool.parameters[0].name == "value"
+        assert extension_tool.parameters[0].type == ParameterType.STR
+        assert extension_tool.parameters[0].required is True
+
     def test_loads_tools_from_installed_entry_points(self, tmp_path, monkeypatch):
         find_available_tools()
         baseline_registry = tool_registry.copy()
