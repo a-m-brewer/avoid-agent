@@ -69,8 +69,12 @@ class TUI:
         self._log_key_debug(data, key)
         return data, key
 
+    def _on_resize(self) -> None:
+        """Handle terminal resize events."""
+        self._safe_render()
+
     def run(self) -> None:
-        self._terminal.start()
+        self._terminal.start(on_resize=self._on_resize)
         try:
             self._safe_render()
             while True:

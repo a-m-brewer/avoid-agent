@@ -1,0 +1,48 @@
+# selfdev-policy.yaml - Controls what the agent can modify during self-improvement.
+#
+# Tier 1 (skills/): Agent can create and modify freely. No restart needed.
+# Tier 2 (extensions/): Agent can create/modify via worktree + validation.
+# Tier 3 (core): Agent can modify via worktree + validation + policy check.
+#
+# This file is FROZEN - the agent must never modify it.
+
+# Files/directories the agent can freely create/modify (Tier 1)
+# These don't require worktree isolation or validation.
+unrestricted:
+  - "skills/**"
+  - "backlog.md"
+  - ".learnings/**"
+
+# Files/directories the agent can modify via worktree + validation (Tier 2 & 3)
+allowed:
+  - "extensions/**"
+  - "avoid_agent/agent/tools/core.py"
+  - "avoid_agent/agent/runtime.py"
+  - "avoid_agent/agent/context.py"
+  - "avoid_agent/providers/**"
+  - "avoid_agent/tui/**"
+  - "avoid_agent/prompts/**"
+  - "avoid_agent/session.py"
+  - "avoid_agent/permissions.py"
+  - "avoid_agent/__main__.py"
+  - "tests/**"
+  - "AGENTS.md"
+
+# Files the agent must NEVER modify. Validation will reject any changes to these.
+frozen:
+  - "supervisor.sh"
+  - "selfdev-policy.yaml"
+  - "avoid_agent/selfdev/**"
+  - ".env"
+  - ".env.example"
+
+# Validation steps required before merging any worktree changes.
+validation:
+  # Must pass: basic import check
+  - "python -c 'from avoid_agent.__main__ import main'"
+  # Must pass: the agent module loads without error
+  - "python -c 'from avoid_agent.agent.runtime import AgentRuntime'"
+  # Must pass: tool discovery works
+  - "python -c 'from avoid_agent.agent.tools.finder import find_available_tools; find_available_tools()'"
+  # Run tests if they exist
+  - "python -m pytest tests/ -x -q --tb=short 2>/dev/null || true"

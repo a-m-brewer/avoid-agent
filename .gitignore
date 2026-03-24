@@ -178,3 +178,5 @@ pyrightconfig.json
 .env
 .DS_Store
 data/
+.worktrees/
+.learnings/

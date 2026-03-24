@@ -609,6 +609,26 @@ def _headless_fatal(message: str) -> None:
     sys.exit(1)
 
 
+def _run_selfdev(args) -> None:
+    """Run the self-improvement loop."""
+    from pathlib import Path
+
+    from dotenv import load_dotenv
+
+    from avoid_agent.selfdev.loop import run_loop
+
+    load_dotenv()
+    repo_root = Path(__file__).resolve().parent.parent
+    model = args.model or os.getenv("DEFAULT_MODEL")
+    exit_code = run_loop(
+        repo_root=repo_root,
+        model=model,
+        max_turns=args.max_turns,
+        single=args.single,
+    )
+    sys.exit(exit_code)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="avoid-agent")
     subparsers = parser.add_subparsers(dest="command")
@@ -655,6 +675,22 @@ def main() -> None:
         help="Don't persist session (ephemeral run)",
     )
 
+    selfdev_parser = subparsers.add_parser(
+        "selfdev", help="Run the self-improvement loop"
+    )
+    selfdev_parser.add_argument(
+        "--model", type=str, default=None,
+        help="Provider/model for headless agent (e.g. anthropic/claude-sonnet-4-6)",
+    )
+    selfdev_parser.add_argument(
+        "--max-turns", type=int, default=20,
+        help="Max turns per headless run (default: 20)",
+    )
+    selfdev_parser.add_argument(
+        "--single", action="store_true",
+        help="Run only one cycle then exit (don't loop)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "prompt" and args.prompt_command == "export":
@@ -663,6 +699,10 @@ def main() -> None:
 
     if args.command == "headless":
         _run_headless(args)
+        return
+
+    if args.command == "selfdev":
+        _run_selfdev(args)
         return
 
     _run_agent()
