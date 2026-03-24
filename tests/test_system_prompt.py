@@ -4,8 +4,10 @@ from datetime import date
 
 from avoid_agent.prompts.system_prompt import (
     ContextFile,
+    SkillSummary,
     SystemPromptOptions,
     build_system_prompt,
+    discover_skills,
 )
 
 
@@ -108,3 +110,68 @@ def test_prompt_guidelines_are_deduplicated():
     )
 
     assert prompt.count("Do not fabricate files, command outputs, or test results.") == 1
+
+
+def test_discover_skills_loads_name_and_description_and_deduplicates(tmp_path):
+    repo_skills = tmp_path / "skills"
+    user_skills = tmp_path / "user-skills"
+    (repo_skills / "alpha").mkdir(parents=True)
+    (repo_skills / "invalid").mkdir(parents=True)
+    (user_skills / "beta").mkdir(parents=True)
+
+    (repo_skills / "alpha" / "SKILL.md").write_text(
+        """---
+name: Repo Skill
+description: First skill summary.
+---
+# Body should not be loaded into prompt summaries
+""",
+        encoding="utf-8",
+    )
+    (repo_skills / "invalid" / "SKILL.md").write_text(
+        """---
+name: Missing description
+---
+""",
+        encoding="utf-8",
+    )
+    (user_skills / "beta" / "SKILL.md").write_text(
+        """---
+name: repo skill
+description: Duplicate by name, should be ignored.
+---
+""",
+        encoding="utf-8",
+    )
+
+    discovered = discover_skills(
+        skills_search_paths=[str(repo_skills), str(user_skills)],
+    )
+
+    assert discovered == [
+        SkillSummary(name="Repo Skill", description="First skill summary."),
+    ]
+
+
+def test_build_system_prompt_includes_discovered_skill_summaries(tmp_path):
+    (tmp_path / "skills" / "self-review").mkdir(parents=True)
+    (tmp_path / "skills" / "self-review" / "SKILL.md").write_text(
+        """---
+name: Self Review
+description: Review recent changes before finalizing.
+---
+Use git diff and inspect changed files.
+""",
+        encoding="utf-8",
+    )
+
+    prompt = build_system_prompt(
+        options=SystemPromptOptions(
+            include_date=False,
+            working_directory=str(tmp_path),
+        )
+    )
+
+    assert "## Skills" in prompt
+    assert "- Self Review: Review recent changes before finalizing." in prompt
+    assert "Use git diff and inspect changed files." not in prompt
