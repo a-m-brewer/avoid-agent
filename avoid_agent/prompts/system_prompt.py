@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
+
+import yaml
 
 _MAX_GIT_STATUS_CHARS = 4000
 _MAX_TREE_CHARS = 8000
@@ -15,6 +18,14 @@ class ContextFile:
 
     path: str
     content: str
+
+
+@dataclass(frozen=True)
+class SkillSummary:
+    """Lightweight, prompt-safe skill metadata."""
+
+    name: str
+    description: str
 
 
 @dataclass
@@ -32,6 +43,8 @@ class SystemPromptOptions:
     top_level_file_structure: str | None = None
     include_date: bool = True
     current_date: date | None = None
+    skills_search_paths: list[str] | None = None
+    discovered_skills: list[SkillSummary] | None = None
 
 
 def _section(title: str, body: str) -> str:
@@ -78,6 +91,99 @@ def _project_context_section(context_files: list[ContextFile] | None) -> str | N
         )
 
     return "# Project Context\n\n" + "\n".join(chunks).strip()
+
+
+def _parse_skill_frontmatter(content: str) -> SkillSummary | None:
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+
+    frontmatter_end = None
+    for idx, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            frontmatter_end = idx
+            break
+
+    if frontmatter_end is None:
+        return None
+
+    frontmatter = "\n".join(lines[1:frontmatter_end]).strip()
+    if not frontmatter:
+        return None
+
+    try:
+        parsed = yaml.safe_load(frontmatter)
+    except yaml.YAMLError:
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    name = parsed.get("name")
+    description = parsed.get("description")
+    if not isinstance(name, str) or not isinstance(description, str):
+        return None
+
+    stripped_name = name.strip()
+    stripped_description = description.strip()
+    if not stripped_name or not stripped_description:
+        return None
+
+    return SkillSummary(name=stripped_name, description=stripped_description)
+
+
+def _default_skill_search_paths(working_directory: str | None) -> list[Path]:
+    base = Path(working_directory).expanduser() if working_directory else Path.cwd()
+    return [base / "skills", Path.home() / ".avoid-agent" / "skills"]
+
+
+def discover_skills(
+    working_directory: str | None = None,
+    *,
+    skills_search_paths: list[str] | None = None,
+) -> list[SkillSummary]:
+    """Discover skills from local and user skill directories."""
+    roots = (
+        [Path(path).expanduser() for path in skills_search_paths]
+        if skills_search_paths is not None
+        else _default_skill_search_paths(working_directory)
+    )
+
+    discovered: list[SkillSummary] = []
+    seen_names: set[str] = set()
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+
+        for skill_file in sorted(root.rglob("SKILL.md")):
+            try:
+                content = skill_file.read_text(encoding="utf-8")
+            except OSError:
+                continue
+
+            parsed = _parse_skill_frontmatter(content)
+            if parsed is None:
+                continue
+
+            name_key = parsed.name.lower()
+            if name_key in seen_names:
+                continue
+
+            seen_names.add(name_key)
+            discovered.append(parsed)
+
+    discovered.sort(key=lambda skill: skill.name.lower())
+    return discovered
+
+
+def _skills_section(skills: list[SkillSummary]) -> str | None:
+    if not skills:
+        return None
+
+    lines = ["Discovered skills available in this environment:"]
+    lines.extend(f"- {skill.name}: {skill.description}" for skill in skills)
+    return _section("Skills", "\n".join(lines))
 
 
 def _tools_section(selected_tools: list[str] | None, tool_snippets: dict[str, str] | None) -> str:
@@ -277,6 +383,17 @@ def build_system_prompt(
     project_context = _project_context_section(opts.context_files)
     if project_context:
         parts.append(project_context)
+
+    discovered_skills = opts.discovered_skills
+    if discovered_skills is None:
+        discovered_skills = discover_skills(
+            working_directory=opts.working_directory,
+            skills_search_paths=opts.skills_search_paths,
+        )
+
+    skills_section = _skills_section(discovered_skills)
+    if skills_section:
+        parts.append(skills_section)
 
     if opts.include_date:
         prompt_date = opts.current_date or datetime.now().date()
