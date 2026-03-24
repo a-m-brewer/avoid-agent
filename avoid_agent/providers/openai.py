@@ -99,13 +99,13 @@ class OpenAIStream(ProviderStream):
                 content=content,
                 stop_reason=stop_reason,
                 usage=Usage(
-                    input_tokens=final.usage.prompt_tokens,
-                    output_tokens=final.usage.completion_tokens,
-                    total_tokens=final.usage.total_tokens,
+                    input_tokens=final.usage.prompt_tokens if final.usage else 0,
+                    output_tokens=final.usage.completion_tokens if final.usage else 0,
+                    total_tokens=final.usage.total_tokens if final.usage else 0,
                 ),
             ),
             stop_reason=stop_reason,
-            input_tokens=final.usage.prompt_tokens,
+            input_tokens=final.usage.prompt_tokens if final.usage else 0,
         )
 
 
@@ -154,7 +154,7 @@ class OpenAIProvider(Provider):
         if tool_choice != "auto" and provider_tools:
             kwargs["tool_choice"] = tool_choice
         # Optional reasoning effort control (supported by some models/APIs)
-        if getattr(self, "effort", None):
+        if self.thinking_enabled and getattr(self, "effort", None):
             kwargs["reasoning"] = {"effort": self.effort}
 
         openai_stream = self._client.chat.completions.stream(**kwargs)

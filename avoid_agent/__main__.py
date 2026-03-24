@@ -130,15 +130,28 @@ def _run_agent() -> None:
         effort = "high"
 
     active_model = default_model
+    tui = TUI(model=active_model, on_submit=lambda _: None)
 
     def build_provider(model: str):
-        return providers.get_provider(
+        provider = providers.get_provider(
             model=model,
             system=system,
             max_tokens=max_tokens,
             thinking_enabled=thinking_enabled,
             effort=effort,
         )
+        if thinking_enabled and not provider.supports_thinking:
+            provider = providers.get_provider(
+                model=model,
+                system=system,
+                max_tokens=max_tokens,
+                thinking_enabled=False,
+                effort=effort,
+            )
+            tui.set_warning("! thinking n/a")
+        else:
+            tui.set_warning(None)
+        return provider
 
     provider = build_provider(active_model)
 
@@ -158,7 +171,6 @@ def _run_agent() -> None:
         messages: list[Message] = []
         restored = False
 
-    tui = TUI(model=active_model, on_submit=lambda _: None)
     # Initialize status bar with persisted settings
     tui.set_thinking_enabled(thinking_enabled)
     tui.set_effort(effort)

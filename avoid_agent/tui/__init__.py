@@ -118,6 +118,10 @@ class TUI:
         self._status.effort = effort
         self._safe_render()
 
+    def set_warning(self, text: str | None) -> None:
+        self._status.warning = text
+        self._safe_render()
+
     def append_chunk(self, text: str) -> None:
         if self._conversation.items and isinstance(
             self._conversation.items[-1], AssistantItem
@@ -214,7 +218,7 @@ class TUI:
                 text = self._input.line.clear()
                 if text.strip():
                     self._history.push(text)
-                    if text.strip() in ("exit", "quit"):
+                    if text.strip() in ("/exit", "/quit"):
                         self._safe_render()
                         return True
                     self._conversation.items.append(UserItem(text=text))
@@ -322,11 +326,20 @@ class TUI:
 
         query = ""
         selected = 0
+        view_offset = 0
+        window_size = 15
 
         while True:
             filtered = [opt for opt in options if query.lower() in opt.lower()]
             if selected >= len(filtered):
                 selected = max(0, len(filtered) - 1)
+
+            max_offset = max(0, len(filtered) - window_size)
+            view_offset = min(view_offset, max_offset)
+            if selected < view_offset:
+                view_offset = selected
+            elif selected >= view_offset + window_size:
+                view_offset = selected - window_size + 1
 
             width = self._terminal.columns
             border = "─" * max(1, width)
@@ -338,12 +351,13 @@ class TUI:
             lines.append(title)
             lines.append(f"Search: {query}")
             lines.append("(type to filter, ↑/↓ to move, Enter to select, Esc/Ctrl+C to cancel)")
-            preview = filtered[:15]
+            preview = filtered[view_offset:view_offset + window_size]
             for i, opt in enumerate(preview):
-                marker = ">" if i == selected else " "
+                marker = ">" if i + view_offset == selected else " "
                 lines.append(f"{marker} {opt}")
-            if len(filtered) > len(preview):
-                lines.append(f"... and {len(filtered) - len(preview)} more")
+            remaining_below = len(filtered) - (view_offset + len(preview))
+            if remaining_below > 0:
+                lines.append(f"... and {remaining_below} more")
             if not filtered:
                 lines.append("(no matches)")
             lines.append(border)
@@ -358,10 +372,14 @@ class TUI:
             if key == "up":
                 if filtered:
                     selected = max(0, selected - 1)
+                    if selected < view_offset:
+                        view_offset = selected
                 continue
             if key == "down":
                 if filtered:
                     selected = min(len(filtered) - 1, selected + 1)
+                    if selected >= view_offset + window_size:
+                        view_offset = selected - window_size + 1
                 continue
             if key == "enter":
                 if filtered:

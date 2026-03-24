@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import time
 from typing import Iterator, Literal, TypeAlias
+import urllib.request
 
 from avoid_agent.providers.openai_codex_oauth import get_valid_credentials, load_credentials
 
@@ -34,6 +35,9 @@ AVAILABLE_MODELS: dict[str, list[str]] = {
     "openrouter": [
         "openai/gpt-5",
         "anthropic/claude-sonnet-4-6",
+    ],
+    "ollama": [
+        "devstral-small:latest",
     ],
 }
 
@@ -113,6 +117,23 @@ def _list_dynamic_models() -> list[str]:
                 providers_to_models["openrouter"] = models
         except Exception:  # pylint: disable=broad-except
             pass
+
+    ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{ollama_host}/api/tags", timeout=2) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        models_payload = payload.get("models") if isinstance(payload, dict) else []
+        models = [
+            name
+            for item in models_payload
+            if isinstance(item, dict)
+            for name in [item.get("name")]
+            if isinstance(name, str) and name.strip()
+        ]
+        if models:
+            providers_to_models["ollama"] = models
+    except Exception:  # pylint: disable=broad-except
+        pass
 
     creds = load_credentials()
     if creds:
@@ -369,6 +390,7 @@ class Provider(metaclass=ABCMeta):
         self.effort: Literal["low", "medium", "high"] = (
             effort if effort in ("low", "medium", "high") else "high"
         )
+        self.supports_thinking: bool = True
 
     @abstractmethod
     def stream(
@@ -492,6 +514,23 @@ def get_provider(
             thinking_enabled=thinking_enabled,
             effort=effort,
         )
+
+    if provider_name == "ollama":
+        # pylint: disable=import-outside-toplevel
+        from avoid_agent.providers.openai import OpenAIProvider
+
+        base_url = f"{os.getenv('OLLAMA_HOST', 'http://localhost:11434').rstrip('/')}/v1"
+        provider = OpenAIProvider(
+            system=system,
+            model=model_name,
+            max_tokens=internal_max_tokens,
+            base_url=base_url,
+            api_key="ollama",
+            thinking_enabled=thinking_enabled,
+            effort=effort,
+        )
+        provider.supports_thinking = False
+        return provider
 
     if provider_name == "anthropic":
         # pylint: disable=import-outside-toplevel

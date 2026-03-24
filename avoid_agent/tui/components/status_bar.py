@@ -9,6 +9,7 @@ class StatusBarComponent:
         self.messages = 0
         self.thinking_enabled: bool = False
         self.effort: str = "high"
+        self.warning: str | None = None
 
     def render(self, width: int) -> list[str]:
         extras: list[str] = []
@@ -19,7 +20,10 @@ class StatusBarComponent:
         extras_text = (" | " + " | ".join(extras)) if extras else ""
 
         left = f" {self.model}{extras_text}"
-        right = f"{self.messages} msgs | {self.tokens} tokens "
+        right = f"{self.messages} msgs | {self.tokens} tokens"
+        if self.warning:
+            right += f" | {self.warning}"
+        right += " "
         gap = width - len(left) - len(right)
         if gap < 0:
             line = (left + right)[:width]
