@@ -352,10 +352,23 @@ class ProviderStream(metaclass=ABCMeta):
 class Provider(metaclass=ABCMeta):
     """Base class for providers."""
 
-    def __init__(self, system: str, model: str, max_tokens: int):
+    def __init__(
+        self,
+        system: str,
+        model: str,
+        max_tokens: int,
+        *,
+        thinking_enabled: bool | None = None,
+        effort: Literal["low", "medium", "high"] | None = None,
+    ):
         self.system = system
         self.model = model
         self.max_tokens = max_tokens
+        # Optional reasoning controls. Defaults: thinking off, effort high.
+        self.thinking_enabled: bool = bool(thinking_enabled) if thinking_enabled is not None else False
+        self.effort: Literal["low", "medium", "high"] = (
+            effort if effort in ("low", "medium", "high") else "high"
+        )
 
     @abstractmethod
     def stream(
@@ -368,6 +381,7 @@ class Provider(metaclass=ABCMeta):
 
 
 def normalize_messages(messages: list[Message]) -> list[Message]:
+
     """Normalize message history before sending it back to a provider.
 
     - Drops aborted/error assistant turns that should not be replayed.
@@ -426,7 +440,14 @@ def normalize_messages(messages: list[Message]) -> list[Message]:
     return normalized
 
 
-def get_provider(model: str | None, system: str, max_tokens: int | None) -> Provider:
+def get_provider(
+    model: str | None,
+    system: str,
+    max_tokens: int | None,
+    *,
+    thinking_enabled: bool | None = None,
+    effort: Literal["low", "medium", "high"] | None = None,
+) -> Provider:
     selected_model = model or os.getenv("DEFAULT_MODEL")
     if selected_model is None:
         raise ValueError(
@@ -468,13 +489,19 @@ def get_provider(model: str | None, system: str, max_tokens: int | None) -> Prov
             max_tokens=internal_max_tokens,
             base_url=base_url,
             api_key=api_key,
+            thinking_enabled=thinking_enabled,
+            effort=effort,
         )
 
     if provider_name == "anthropic":
         # pylint: disable=import-outside-toplevel
         from avoid_agent.providers.anthropic import AnthropicProvider
         return AnthropicProvider(
-            system=system, model=model_name, max_tokens=internal_max_tokens
+            system=system,
+            model=model_name,
+            max_tokens=internal_max_tokens,
+            thinking_enabled=thinking_enabled,
+            effort=effort,
         )
 
     if provider_name == "openai-codex":
@@ -487,6 +514,8 @@ def get_provider(model: str | None, system: str, max_tokens: int | None) -> Prov
             model=model_name,
             max_tokens=internal_max_tokens,
             credentials=creds,
+            thinking_enabled=thinking_enabled,
+            effort=effort,
         )
 
     raise ValueError(f"Unsupported provider: {provider_name}")

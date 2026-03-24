@@ -139,8 +139,14 @@ def _policy_sections(
             operational,
             "Never use run_bash to create or modify files (no cat/heredoc/echo/sed/python "
             "scripts that write files). Always use write_file or edit_file instead — they "
-            "produce verifiable proofs and diffs. run_bash is for read-only inspection, "
-            "running tests, git operations, and other non-file-writing shell tasks.",
+            "produce verifiable proofs and diffs. run_bash is for running tests, git "
+            "operations, and other non-file-writing shell tasks.",
+        )
+        add_unique(
+            operational,
+            "Always use read_file to read file contents — never cat/sed/head/tail via "
+            "run_bash. read_file produces SHA256 verification hashes that prove you "
+            "actually read the file. run_bash reads bypass proof tracking.",
         )
 
     add_unique(

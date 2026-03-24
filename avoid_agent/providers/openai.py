@@ -112,14 +112,25 @@ class OpenAIStream(ProviderStream):
 class OpenAIProvider(Provider):
     """Provider for OpenAI models."""
 
-    def __init__(self,
-                 system: str,
-                 model: str,
-                 max_tokens: int,
-                 api_key: str,
-                 base_url: str | None):
+    def __init__(
+        self,
+        system: str,
+        model: str,
+        max_tokens: int,
+        api_key: str,
+        base_url: str | None,
+        *,
+        thinking_enabled: bool | None = None,
+        effort: str | None = None,
+    ):
         """Initialize the OpenAI provider with system instructions, model name, and max tokens."""
-        super().__init__(system, model, max_tokens)
+        super().__init__(
+            system,
+            model,
+            max_tokens,
+            thinking_enabled=thinking_enabled,
+            effort=effort,
+        )
         self._client = OpenAI(
             api_key=api_key,
             base_url=base_url
@@ -142,6 +153,9 @@ class OpenAIProvider(Provider):
         }
         if tool_choice != "auto" and provider_tools:
             kwargs["tool_choice"] = tool_choice
+        # Optional reasoning effort control (supported by some models/APIs)
+        if getattr(self, "effort", None):
+            kwargs["reasoning"] = {"effort": self.effort}
 
         openai_stream = self._client.chat.completions.stream(**kwargs)
         return OpenAIStream(openai_stream)

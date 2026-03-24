@@ -18,7 +18,7 @@ from avoid_agent.providers import (
     UserMessage,
 )
 from avoid_agent import providers
-from avoid_agent.providers import list_available_models, get_saved_model, save_selected_model
+from avoid_agent.providers import list_available_models, get_saved_model, save_selected_model, load_user_config, save_user_config
 from avoid_agent.permissions import load_allowed, save_allowed
 from avoid_agent.session import delete_session, list_sessions, load_session, save_session
 from avoid_agent.prompts import build_system_prompt, export_system_prompt_markdown
@@ -122,6 +122,13 @@ def _run_agent() -> None:
         top_level_file_structure=top_level_structure,
     )
 
+    # Load persisted user config for thinking/effort
+    user_config = load_user_config()
+    thinking_enabled = bool(user_config.get("thinking", False))
+    effort = user_config.get("effort", "high")
+    if effort not in ("low", "medium", "high"):
+        effort = "high"
+
     active_model = default_model
 
     def build_provider(model: str):
@@ -129,6 +136,8 @@ def _run_agent() -> None:
             model=model,
             system=system,
             max_tokens=max_tokens,
+            thinking_enabled=thinking_enabled,
+            effort=effort,
         )
 
     provider = build_provider(active_model)
@@ -150,9 +159,12 @@ def _run_agent() -> None:
         restored = False
 
     tui = TUI(model=active_model, on_submit=lambda _: None)
+    # Initialize status bar with persisted settings
+    tui.set_thinking_enabled(thinking_enabled)
+    tui.set_effort(effort)
 
     def on_submit(text: str) -> None:
-        nonlocal messages, active_session, context_strategy, provider, active_model
+        nonlocal messages, active_session, context_strategy, provider, active_model, thinking_enabled, effort
 
         if text.strip() == "/strategy":
             tui.report_info(
@@ -161,6 +173,47 @@ def _run_agent() -> None:
                 f"Use /strategy <name> to switch."
             )
             return
+
+        # Toggle or show extended thinking mode
+        if text.strip().startswith("/thinking"):
+            parts = text.strip().split()
+            if len(parts) == 1:
+                # Toggle
+                thinking_enabled = not thinking_enabled
+            elif len(parts) == 2 and parts[1].lower() in {"on", "off"}:
+                thinking_enabled = parts[1].lower() == "on"
+            else:
+                tui.report_error("Usage: /thinking [on|off]")
+                return
+
+            # Persist and apply
+            cfg = load_user_config()
+            cfg["thinking"] = thinking_enabled
+            save_user_config(cfg)
+            provider = build_provider(active_model)
+            tui.set_thinking_enabled(thinking_enabled)
+            tui.report_info(f"Thinking is now {'on' if thinking_enabled else 'off'}")
+            return
+
+        # Set or show reasoning effort level
+        if text.strip().startswith("/effort"):
+            parts = text.strip().split()
+            if len(parts) == 1:
+                tui.report_info("Current effort: " + effort + "\nOptions: low, medium, high\nUse /effort <level> to change.")
+                return
+            if len(parts) >= 2:
+                new_effort = parts[1].lower()
+                if new_effort not in {"low", "medium", "high"}:
+                    tui.report_error("Invalid effort level. Use one of: low, medium, high")
+                    return
+                effort = new_effort
+                cfg = load_user_config()
+                cfg["effort"] = effort
+                save_user_config(cfg)
+                provider = build_provider(active_model)
+                tui.set_effort(effort)
+                tui.report_info(f"Effort set to: {effort}")
+                return
 
         if text.strip().startswith("/strategy "):
             new_strategy = text.strip().split(maxsplit=1)[1]

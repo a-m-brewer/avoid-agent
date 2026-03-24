@@ -344,8 +344,23 @@ class CodexStream(ProviderStream):
 class OpenAICodexProvider(Provider):
     """Provider for OpenAI Codex using ChatGPT Plus/Pro OAuth credentials."""
 
-    def __init__(self, system: str, model: str, max_tokens: int, credentials: dict):
-        super().__init__(system, model, max_tokens)
+    def __init__(
+        self,
+        system: str,
+        model: str,
+        max_tokens: int,
+        credentials: dict,
+        *,
+        thinking_enabled: bool | None = None,
+        effort: str | None = None,
+    ):
+        super().__init__(
+            system,
+            model,
+            max_tokens,
+            thinking_enabled=thinking_enabled,
+            effort=effort,
+        )
         self._credentials = credentials
 
     def _refresh_auth(self) -> None:
@@ -379,6 +394,9 @@ class OpenAICodexProvider(Provider):
             "tool_choice": tool_choice if tools else "none",
             "parallel_tool_calls": True,
         }
+        # Optional reasoning effort control
+        if self.effort:
+            body["reasoning"] = {"effort": self.effort}
         if tools:
             body["tools"] = [self._convert_tool(t) for t in tools]
         return body
@@ -402,8 +420,6 @@ class OpenAICodexProvider(Provider):
                                 "status": "completed",
                                 "content": [{"type": "output_text", "text": block.text}],
                             }
-                            if block.item_id:
-                                text_item["id"] = block.item_id
                             result.append(text_item)
                         elif isinstance(block, ProviderToolCall):
                             fc_item: dict = {
@@ -412,8 +428,6 @@ class OpenAICodexProvider(Provider):
                                 "name": block.name,
                                 "arguments": json.dumps(block.arguments),
                             }
-                            if block.item_id:
-                                fc_item["id"] = block.item_id
                             result.append(fc_item)
                 else:
                     for reasoning_item in msg.reasoning_items:
@@ -426,8 +440,6 @@ class OpenAICodexProvider(Provider):
                             "status": "completed",
                             "content": [{"type": "output_text", "text": msg.text}],
                         }
-                        if msg.text_id:
-                            text_item["id"] = msg.text_id
                         result.append(text_item)
 
                     for tc in msg.tool_calls:
@@ -437,8 +449,6 @@ class OpenAICodexProvider(Provider):
                             "name": tc.name,
                             "arguments": json.dumps(tc.arguments),
                         }
-                        if tc.item_id:
-                            fc_item["id"] = tc.item_id
                         result.append(fc_item)
 
             elif isinstance(msg, ToolResultMessage):
@@ -447,6 +457,12 @@ class OpenAICodexProvider(Provider):
                     "call_id": msg.tool_call_id,
                     "output": msg.content,
                 })
+
+        # Strip server-side item IDs from all input items. With store=false,
+        # the API cannot look up items by ID and will 404. The full content
+        # is already sent inline, so IDs are not needed for replay.
+        for item in result:
+            item.pop("id", None)
 
         return result
 

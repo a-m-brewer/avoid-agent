@@ -110,6 +110,14 @@ class TUI:
         self._status.model = model
         self._safe_render()
 
+    def set_thinking_enabled(self, enabled: bool) -> None:
+        self._status.thinking_enabled = bool(enabled)
+        self._safe_render()
+
+    def set_effort(self, effort: str) -> None:
+        self._status.effort = effort
+        self._safe_render()
+
     def append_chunk(self, text: str) -> None:
         if self._conversation.items and isinstance(
             self._conversation.items[-1], AssistantItem

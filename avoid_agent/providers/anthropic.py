@@ -107,8 +107,22 @@ class AnthropicStream(ProviderStream):
 class AnthropicProvider(Provider):
     """Provider for Anthropic models."""
 
-    def __init__(self, system: str, model: str, max_tokens: int):
-        super().__init__(system, model, max_tokens)
+    def __init__(
+        self,
+        system: str,
+        model: str,
+        max_tokens: int,
+        *,
+        thinking_enabled: bool | None = None,
+        effort: str | None = None,
+    ):
+        super().__init__(
+            system,
+            model,
+            max_tokens,
+            thinking_enabled=thinking_enabled,
+            effort=effort,  # Anthropic currently uses 'thinking' only; keep for API symmetry
+        )
         self._client = Anthropic()
 
     def stream(
@@ -129,6 +143,11 @@ class AnthropicProvider(Provider):
         }
         if tool_choice != "auto" and provider_tools:
             kwargs["tool_choice"] = {"type": "any" if tool_choice == "required" else tool_choice}
+
+        # Optional thinking configuration
+        if self.thinking_enabled:
+            budget = min(1024, max(128, self.max_tokens // 4))
+            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
         anthropic_stream = self._client.messages.stream(**kwargs)
         return AnthropicStream(ctx=anthropic_stream)
