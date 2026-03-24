@@ -28,7 +28,11 @@ _SUCCESS_WITHOUT_EVIDENCE_RE = re.compile(
 )
 _TOOL_ACCESS_BLOCKER_RE = re.compile(
     r"(did not include tool access|no tool access|cannot run .*tool|cannot run .*verification|"
-    r"please allow me to run|allow me to run tests|required verification tools)",
+    r"please allow me to run|allow me to run tests|required verification tools|"
+    r"\bneed to (read|write|edit|run|modify|implement|inspect|check|call|execute|"
+    r"look at|examine|update|add|create|search|find|make changes)\b|"
+    r"\bneed (additional|more|further) .{0,50}(tool|file|command|call)\b|"
+    r"\btool calls? (are |to )?(needed|required|necessary|to complete)\b)",
     re.IGNORECASE,
 )
 

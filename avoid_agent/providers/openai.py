@@ -5,6 +5,14 @@ from typing import Iterator
 
 from openai import OpenAI
 
+
+def list_models(api_key: str, base_url: str | None = None) -> list[str]:
+    """List available model IDs via OpenAI-compatible models API."""
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    response = client.models.list()
+    ids = [getattr(model, "id", "") for model in response.data]
+    return sorted(model_id for model_id in ids if model_id)
+
 from avoid_agent.agent.tools import ToolDefinition
 from avoid_agent.providers import (
     AssistantMessage,

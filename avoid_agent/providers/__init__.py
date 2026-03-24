@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
+import json
 import os
+from pathlib import Path
 import time
 from typing import Iterator, Literal, TypeAlias
+
+from avoid_agent.providers.openai_codex_oauth import get_valid_credentials, load_credentials
 
 from avoid_agent.agent.tools import ToolDefinition
 
@@ -33,13 +37,118 @@ AVAILABLE_MODELS: dict[str, list[str]] = {
     ],
 }
 
+_MODEL_CACHE: dict[str, object] = {"expires_at": 0.0, "models": []}
+_MODEL_CACHE_TTL_SECONDS = 300
+_CONFIG_PATH = Path.home() / ".avoid-agent" / "config.json"
 
-def list_available_models() -> list[str]:
-    """Return known models in provider/model format for model picker UX."""
+
+def load_user_config() -> dict:
+    if not _CONFIG_PATH.exists():
+        return {}
+    try:
+        data = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_user_config(config: dict) -> None:
+    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CONFIG_PATH.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+
+def get_saved_model() -> str | None:
+    model = load_user_config().get("default_model")
+    return model if isinstance(model, str) and model.strip() else None
+
+
+def save_selected_model(model: str) -> None:
+    config = load_user_config()
+    config["default_model"] = model
+    save_user_config(config)
+
+
+def _fallback_models() -> list[str]:
     out: list[str] = []
     for provider_name, models in AVAILABLE_MODELS.items():
         out.extend(f"{provider_name}/{model}" for model in models)
     return sorted(out)
+
+
+def _list_dynamic_models() -> list[str]:
+    providers_to_models: dict[str, list[str]] = {}
+
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    if anthropic_key:
+        from avoid_agent.providers.anthropic import list_models as list_anthropic_models
+
+        try:
+            models = list_anthropic_models(api_key=anthropic_key)
+            if models:
+                providers_to_models["anthropic"] = models
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        from avoid_agent.providers.openai import list_models as list_openai_models
+
+        try:
+            models = list_openai_models(api_key=openai_key)
+            if models:
+                providers_to_models["openai"] = models
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    if openrouter_key:
+        from avoid_agent.providers.openai import list_models as list_openai_models
+
+        try:
+            models = list_openai_models(
+                api_key=openrouter_key,
+                base_url="https://openrouter.ai/api/v1",
+            )
+            if models:
+                providers_to_models["openrouter"] = models
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    creds = load_credentials()
+    if creds:
+        try:
+            from avoid_agent.providers.openai_codex import list_models as list_codex_models
+
+            models = list_codex_models(credentials=creds)
+            if models:
+                providers_to_models["openai-codex"] = models
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    out: list[str] = []
+    for provider_name, models in providers_to_models.items():
+        out.extend(f"{provider_name}/{model}" for model in models)
+
+    if not out:
+        return []
+
+    return sorted(set(out))
+
+
+def list_available_models() -> list[str]:
+    """Return available models in provider/model format for model picker UX."""
+    now = time.time()
+    expires_at = float(_MODEL_CACHE.get("expires_at", 0.0) or 0.0)
+    cached_models = _MODEL_CACHE.get("models")
+    if isinstance(cached_models, list) and cached_models and now < expires_at:
+        return list(cached_models)
+
+    dynamic = _list_dynamic_models()
+    models = dynamic or _fallback_models()
+
+    _MODEL_CACHE["models"] = models
+    _MODEL_CACHE["expires_at"] = now + _MODEL_CACHE_TTL_SECONDS
+    return models
 
 # tool_choice controls whether the model must call a tool.
 # "auto" = model decides, "required" = must call a tool, "none" = no tools

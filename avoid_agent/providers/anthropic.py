@@ -6,6 +6,14 @@ from itertools import groupby
 from anthropic import Anthropic
 import anthropic
 
+
+def list_models(api_key: str) -> list[str]:
+    """List available Anthropic model IDs for the authenticated account."""
+    client = Anthropic(api_key=api_key)
+    response = client.models.list()
+    ids = [getattr(model, "id", "") for model in response.data]
+    return sorted(model_id for model_id in ids if model_id)
+
 from avoid_agent.agent.tools import ToolDefinition
 from avoid_agent.providers import (
     AssistantMessage,
@@ -132,6 +140,34 @@ class AnthropicProvider(Provider):
                 result.append(self.__convert_tool_results(item))
             else:
                 result.append(self.__convert_to_provider_message(item))
+        return self._merge_consecutive_user_messages(result)
+
+    @staticmethod
+    def _merge_consecutive_user_messages(messages: list[dict]) -> list[dict]:
+        """Merge consecutive user-role messages into one.
+
+        Anthropic requires strictly alternating user/assistant roles.
+        The runtime appends a controller state UserMessage after the real
+        user message (and after tool-result batches), so consecutive user
+        messages appear on every request.  Merging them into a single
+        multi-block user turn satisfies the API constraint without
+        changing the internal message model.
+        """
+        if not messages:
+            return messages
+        result = [messages[0]]
+        for msg in messages[1:]:
+            prev = result[-1]
+            if prev["role"] == "user" and msg["role"] == "user":
+                prev_content = prev["content"]
+                curr_content = msg["content"]
+                if isinstance(prev_content, str):
+                    prev_content = [{"type": "text", "text": prev_content}]
+                if isinstance(curr_content, str):
+                    curr_content = [{"type": "text", "text": curr_content}]
+                result[-1] = {"role": "user", "content": prev_content + curr_content}
+            else:
+                result.append(msg)
         return result
 
     @staticmethod

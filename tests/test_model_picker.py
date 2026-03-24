@@ -49,8 +49,8 @@ class _FakeRenderer:
 
 def test_list_available_models_includes_provider_prefix() -> None:
     models = list_available_models()
-    assert any(m.startswith("anthropic/") for m in models)
-    assert any(m.startswith("openai/") for m in models)
+    assert len(models) > 0, "Expected at least one model"
+    assert all("/" in m for m in models), "All models should have provider/model format"
 
 
 def test_picker_can_filter_and_select(monkeypatch) -> None:

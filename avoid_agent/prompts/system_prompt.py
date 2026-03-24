@@ -135,10 +135,17 @@ def _policy_sections(
             operational,
             "If a shell command could be destructive, explain what it will do before running it.",
         )
+        add_unique(
+            operational,
+            "Never use run_bash to create or modify files (no cat/heredoc/echo/sed/python "
+            "scripts that write files). Always use write_file or edit_file instead — they "
+            "produce verifiable proofs and diffs. run_bash is for read-only inspection, "
+            "running tests, git operations, and other non-file-writing shell tasks.",
+        )
 
     add_unique(
         planning,
-        "When asked for a plan, provide a clear, ordered plan before implementation.",
+        "Proceed with implementation directly; if you need more context before acting, gather it with read_file or run_bash first.",
     )
     add_unique(planning, "After making changes, report clearly what you changed and why.")
     add_unique(planning, "When you run commands, summarize key results and findings.")
@@ -169,6 +176,13 @@ def _policy_sections(
     )
     add_unique(reliability, "Do not fabricate files, command outputs, or test results.")
     add_unique(reliability, "Resolve uncertainty by inspecting code or running commands.")
+    add_unique(
+        reliability,
+        "After writing code that calls external APIs or services, verify it works by "
+        "running a quick smoke test via run_bash (e.g. a small Python snippet that "
+        "imports and calls the new function). Do not assume code works just because "
+        "unit tests pass — mocked tests do not exercise real integrations.",
+    )
     add_unique(reliability, "Keep edits minimal and aligned with existing project style.")
 
     for extra in prompt_guidelines or []:

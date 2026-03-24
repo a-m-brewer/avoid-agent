@@ -36,9 +36,38 @@ from avoid_agent.providers import (
 )
 
 CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
+CODEX_MODELS_URL = "https://chatgpt.com/backend-api/models"
 # Time to wait for data before treating the connection as dead.
 # Long enough for deep reasoning pauses; short enough to recover after sleep/disconnect.
 _STREAM_TIMEOUT = 120
+
+
+def list_models(credentials: dict) -> list[str]:
+    """List available Codex model slugs via ChatGPT backend models endpoint."""
+    ua = f"avoid-agent ({platform.system()} {platform.release()}; {platform.machine()})"
+    req = Request(
+        CODEX_MODELS_URL,
+        headers={
+            "Authorization": f"Bearer {credentials['access']}",
+            "chatgpt-account-id": credentials["account_id"],
+            "User-Agent": ua,
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    with urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    models: list[str] = []
+    if isinstance(data, dict):
+        entries = data.get("models")
+        if isinstance(entries, list):
+            for item in entries:
+                if isinstance(item, dict):
+                    slug = item.get("slug") or item.get("id")
+                    if isinstance(slug, str) and slug:
+                        models.append(slug)
+    return sorted(set(models))
 
 
 def _extract_reasoning_text(item: dict) -> str:
@@ -160,7 +189,12 @@ class CodexStream(ProviderStream):
                 req = self._make_request()
                 self._response = urlopen(req, timeout=_STREAM_TIMEOUT)
             else:
-                raise RuntimeError(f"HTTP {e.code}: {e.reason}") from e
+                try:
+                    body = e.read().decode("utf-8", errors="replace")
+                except Exception:  # pylint: disable=broad-except
+                    body = ""
+                detail = f": {body}" if body else ""
+                raise RuntimeError(f"HTTP {e.code}: {e.reason}{detail}") from e
 
     def __enter__(self):
         self._open()
@@ -344,8 +378,6 @@ class OpenAICodexProvider(Provider):
             "input": self._convert_messages(normalize_messages(messages)),
             "tool_choice": tool_choice if tools else "none",
             "parallel_tool_calls": True,
-            "text": {"verbosity": "medium"},
-            "include": ["reasoning.encrypted_content"],
         }
         if tools:
             body["tools"] = [self._convert_tool(t) for t in tools]
