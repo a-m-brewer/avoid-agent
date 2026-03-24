@@ -219,9 +219,55 @@ def _gather_file_tree(worktree_path: Path) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def _load_frozen_patterns(repo_root: Path) -> list[str]:
+    """Load frozen file patterns from selfdev-policy.yaml."""
+    policy_path = repo_root / "selfdev-policy.yaml"
+    if not policy_path.exists():
+        return []
+    try:
+        import yaml
+        with open(policy_path, "r", encoding="utf-8") as f:
+            policy = yaml.safe_load(f) or {}
+        return policy.get("frozen", [])
+    except Exception:
+        return []
+
+
+def _load_allowed_patterns(repo_root: Path) -> list[str]:
+    """Load allowed file patterns from selfdev-policy.yaml."""
+    policy_path = repo_root / "selfdev-policy.yaml"
+    if not policy_path.exists():
+        return []
+    try:
+        import yaml
+        with open(policy_path, "r", encoding="utf-8") as f:
+            policy = yaml.safe_load(f) or {}
+        return policy.get("allowed", []) + policy.get("unrestricted", [])
+    except Exception:
+        return []
+
+
 def build_prompt_for_task(task_text: str, repo_root: Path, worktree_path: Path) -> str:
     """Build the headless prompt with project context for a backlog task."""
     sections = []
+
+    # CRITICAL constraints first — frozen files
+    frozen = _load_frozen_patterns(repo_root)
+    allowed = _load_allowed_patterns(repo_root)
+    frozen_text = "\n".join(f"  - `{p}`" for p in frozen) if frozen else "  (none)"
+    allowed_text = "\n".join(f"  - `{p}`" for p in allowed) if allowed else "  (none)"
+
+    sections.append(
+        "## CRITICAL: File modification rules\n"
+        "Your changes will be AUTOMATICALLY REJECTED if you modify any frozen file.\n"
+        "This has happened before and wasted an entire run. DO NOT touch these files.\n\n"
+        "**FROZEN (do NOT read, modify, create, or overwrite these):**\n"
+        f"{frozen_text}\n\n"
+        "**ALLOWED (you may only modify files matching these patterns):**\n"
+        f"{allowed_text}\n\n"
+        "If you need functionality from a frozen file, use it as-is. Do not copy, "
+        "recreate, or modify it."
+    )
 
     # Task
     sections.append(
@@ -263,8 +309,10 @@ def build_prompt_for_task(task_text: str, repo_root: Path, worktree_path: Path) 
         "## Instructions\n"
         "- Read the relevant code before making changes\n"
         "- Make minimal, focused changes\n"
-        "- Do NOT modify any files under avoid_agent/selfdev/\n"
-        "- Do NOT modify supervisor.sh or selfdev-policy.yaml\n"
+        "- REMINDER: Any modification to frozen files (listed above) will cause "
+        "AUTOMATIC REJECTION of all your work. This includes avoid_agent/selfdev/*, "
+        "supervisor.sh, selfdev-policy.yaml, .env, and .env.example\n"
+        "- Only modify files that match the ALLOWED patterns listed above\n"
         "- After making changes, verify they work by reading the modified files\n"
         "- If you cannot complete the task, explain why"
     )
