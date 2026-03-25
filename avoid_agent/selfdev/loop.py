@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,22 +76,55 @@ def mark_backlog_item(repo_root: Path, item: BacklogItem, status: str, note: str
         f.writelines(lines)
 
 
+def _branch_exists(repo_root: Path, branch_name: str) -> bool:
+    """Return True when a local branch already exists."""
+    result = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
 def create_worktree(repo_root: Path, branch_name: str) -> Path:
-    """Create a git worktree for the given branch."""
+    """Create a git worktree for the given branch.
+
+    If the branch already exists (for example from a preserved failed run),
+    re-attach that branch in a fresh worktree instead of trying to recreate it.
+    """
     worktree_path = repo_root / ".worktrees" / branch_name
     if worktree_path.exists():
         shutil.rmtree(worktree_path)
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Clean up stale metadata from paths that were manually removed.
     subprocess.run(
-        ["git", "worktree", "add", "-b", branch_name, str(worktree_path), "main"],
-        cwd=repo_root, check=True, capture_output=True, text=True,
+        ["git", "worktree", "prune"],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    if _branch_exists(repo_root, branch_name):
+        cmd = ["git", "worktree", "add", str(worktree_path), branch_name]
+    else:
+        cmd = ["git", "worktree", "add", "-b", branch_name, str(worktree_path), "main"]
+
+    subprocess.run(
+        cmd,
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return worktree_path
 
 
 def cleanup_worktree(repo_root: Path, branch_name: str) -> None:
-    """Remove a worktree and its branch."""
+    """Remove a worktree and its branch entirely."""
     worktree_path = repo_root / ".worktrees" / branch_name
     if worktree_path.exists():
         subprocess.run(
@@ -101,6 +135,20 @@ def cleanup_worktree(repo_root: Path, branch_name: str) -> None:
         ["git", "branch", "-D", branch_name],
         cwd=repo_root, check=False, capture_output=True, text=True,
     )
+
+
+def detach_worktree(repo_root: Path, branch_name: str) -> None:
+    """Remove the worktree directory but keep the branch for review."""
+    worktree_path = repo_root / ".worktrees" / branch_name
+    if worktree_path.exists():
+        subprocess.run(
+            ["git", "worktree", "remove", str(worktree_path), "--force"],
+            cwd=repo_root, check=False, capture_output=True, text=True,
+        )
+    log(f"Branch preserved for review: {branch_name}")
+    log(f"  Inspect with: git log main..{branch_name}")
+    log(f"  Diff with:    git diff main...{branch_name}")
+    log(f"  Delete with:  git branch -D {branch_name}")
 
 
 def merge_worktree(repo_root: Path, branch_name: str) -> bool:
@@ -119,13 +167,43 @@ def merge_worktree(repo_root: Path, branch_name: str) -> bool:
     return True
 
 
+def _stream_stderr(pipe, tool_count_ref: list[int]) -> None:
+    """Read stderr lines from the agent process and log progress live."""
+    for raw_line in pipe:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+            etype = event.get("type", "")
+            if etype == "tool_execution_start":
+                tool_count_ref[0] += 1
+                tool_name = event.get("name", "?")
+                log(f"  [{tool_count_ref[0]}] tool: {tool_name}")
+            elif etype == "turn_start":
+                turn = event.get("turn", "?")
+                log(f"  --- turn {turn} ---")
+            elif etype == "turn_complete":
+                turn = event.get("turn", "?")
+                tokens = event.get("input_tokens", "?")
+                log(f"  turn {turn} done ({tokens} input tokens)")
+            elif etype in ("error", "fatal", "validation_error"):
+                log(f"  [{etype}] {event.get('message', '')[:200]}")
+        except json.JSONDecodeError:
+            pass
+
+
 def run_agent_headless(
     worktree_path: Path,
     prompt: str,
     model: str | None = None,
-    max_turns: int = 20,
+    max_turns: int = 40,
 ) -> dict:
-    """Run avoid-agent in headless mode within the worktree."""
+    """Run avoid-agent in headless mode within the worktree.
+
+    Streams stderr events live to the terminal for progress visibility.
+    No hard timeout — max_turns controls when the agent stops.
+    """
     cmd = [
         sys.executable, "-m", "avoid_agent", "headless",
         "--prompt", prompt,
@@ -140,31 +218,33 @@ def run_agent_headless(
     env["PYTHONPATH"] = str(worktree_path)
 
     log(f"Running headless agent in {worktree_path}")
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, cwd=worktree_path,
-        env=env, check=False, timeout=600,
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, cwd=worktree_path, env=env,
     )
 
-    # Log events from stderr
-    event_lines = result.stderr.strip().splitlines() if result.stderr else []
-    for line in event_lines[-20:]:  # last 20 events
-        try:
-            event = json.loads(line)
-            etype = event.get("type", "")
-            if etype in ("error", "fatal", "validation_error"):
-                log(f"  [{etype}] {event.get('message', '')[:200]}")
-        except json.JSONDecodeError:
-            pass
+    # Stream stderr in a background thread for live progress
+    tool_count = [0]
+    stderr_thread = threading.Thread(
+        target=_stream_stderr, args=(proc.stderr, tool_count), daemon=True,
+    )
+    stderr_thread.start()
+
+    # Read stdout directly (communicate() would compete with stderr thread)
+    stdout = proc.stdout.read()
+    proc.wait()
+    stderr_thread.join(timeout=5)
+
+    log(f"Agent finished. Exit code: {proc.returncode}, tool calls: {tool_count[0]}")
 
     # Parse result from stdout
     try:
-        return json.loads(result.stdout)
+        return json.loads(stdout)
     except json.JSONDecodeError:
         return {
             "success": False,
-            "error": f"Failed to parse agent output. Exit code: {result.returncode}",
-            "stdout_preview": result.stdout[:500] if result.stdout else "",
-            "stderr_preview": result.stderr[:500] if result.stderr else "",
+            "error": f"Failed to parse agent output. Exit code: {proc.returncode}",
+            "stdout_preview": stdout[:500] if stdout else "",
         }
 
 
@@ -329,14 +409,14 @@ def log(message: str) -> None:
 def run_one_cycle(
     repo_root: Path,
     model: str | None = None,
-    max_turns: int = 20,
+    max_turns: int = 40,
 ) -> str:
     """Run one self-improvement cycle.
 
     Returns:
         "restart" - changes merged, supervisor should restart
         "done" - no more backlog items
-        "failed" - task failed, move on
+        "failed" - task failed but branch preserved for review
         "error" - unexpected error
     """
     items = parse_backlog(repo_root)
@@ -364,8 +444,11 @@ def run_one_cycle(
         if not result.get("success"):
             error = result.get("error", "unknown error")
             log(f"Agent failed: {error}")
-            mark_backlog_item(repo_root, item, "failed", note=error[:100])
-            cleanup_worktree(repo_root, branch_name)
+            # Commit any partial work before preserving the branch
+            _commit_if_dirty(worktree_path, item.text)
+            mark_backlog_item(repo_root, item, "failed",
+                              note=f"{error[:80]} | branch: {branch_name}")
+            detach_worktree(repo_root, branch_name)
             return "failed"
 
         log(f"Agent completed. Tool calls: {len(result.get('tool_calls', []))}")
@@ -377,22 +460,7 @@ def run_one_cycle(
         )
         if not diff_result.stdout.strip():
             # Agent may not have committed — check working tree
-            status = subprocess.run(
-                ["git", "status", "--porcelain"],
-                capture_output=True, text=True, cwd=worktree_path, check=False,
-            )
-            if status.stdout.strip():
-                # Commit the working tree changes
-                subprocess.run(
-                    ["git", "add", "-A"], cwd=worktree_path, check=True,
-                    capture_output=True, text=True,
-                )
-                subprocess.run(
-                    ["git", "commit", "-m", f"selfdev: {item.text[:72]}"],
-                    cwd=worktree_path, check=True, capture_output=True, text=True,
-                )
-                log("Committed working tree changes.")
-            else:
+            if not _commit_if_dirty(worktree_path, item.text):
                 log("No changes were made. Marking as failed.")
                 mark_backlog_item(repo_root, item, "failed", note="no changes produced")
                 cleanup_worktree(repo_root, branch_name)
@@ -405,16 +473,18 @@ def run_one_cycle(
         print(validation.summary, flush=True)
 
         if not validation.passed:
-            log("Validation failed. Discarding changes.")
-            mark_backlog_item(repo_root, item, "failed", note="validation failed")
-            cleanup_worktree(repo_root, branch_name)
+            log("Validation failed. Branch preserved for review.")
+            mark_backlog_item(repo_root, item, "failed",
+                              note=f"validation failed | branch: {branch_name}")
+            detach_worktree(repo_root, branch_name)
             return "failed"
 
         # Merge back to main
         log("Merging to main...")
         if not merge_worktree(repo_root, branch_name):
-            mark_backlog_item(repo_root, item, "failed", note="merge conflict")
-            cleanup_worktree(repo_root, branch_name)
+            mark_backlog_item(repo_root, item, "failed",
+                              note=f"merge conflict | branch: {branch_name}")
+            detach_worktree(repo_root, branch_name)
             return "failed"
 
         mark_backlog_item(repo_root, item, "done")
@@ -422,24 +492,42 @@ def run_one_cycle(
         log(f"Task completed and merged: {item.text}")
         return "restart"
 
-    except subprocess.TimeoutExpired:
-        log("Agent timed out.")
-        mark_backlog_item(repo_root, item, "failed", note="timeout")
-        if worktree_path:
-            cleanup_worktree(repo_root, branch_name)
-        return "failed"
     except Exception as e:
         log(f"Unexpected error: {e}")
-        mark_backlog_item(repo_root, item, "failed", note=str(e)[:100])
         if worktree_path:
-            cleanup_worktree(repo_root, branch_name)
+            _commit_if_dirty(worktree_path, item.text)
+            mark_backlog_item(repo_root, item, "failed",
+                              note=f"{str(e)[:80]} | branch: {branch_name}")
+            detach_worktree(repo_root, branch_name)
+        else:
+            mark_backlog_item(repo_root, item, "failed", note=str(e)[:100])
         return "error"
+
+
+def _commit_if_dirty(worktree_path: Path, task_text: str) -> bool:
+    """Commit any uncommitted changes in the worktree. Returns True if committed."""
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        capture_output=True, text=True, cwd=worktree_path, check=False,
+    )
+    if not status.stdout.strip():
+        return False
+    subprocess.run(
+        ["git", "add", "-A"], cwd=worktree_path, check=True,
+        capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", f"selfdev (partial): {task_text[:72]}"],
+        cwd=worktree_path, check=True, capture_output=True, text=True,
+    )
+    log("Committed working tree changes.")
+    return True
 
 
 def run_loop(
     repo_root: Path,
     model: str | None = None,
-    max_turns: int = 20,
+    max_turns: int = 40,
     single: bool = False,
 ) -> int:
     """Run the self-improvement loop.

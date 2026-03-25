@@ -28,7 +28,8 @@ class TUI:
     def __init__(self,
                  on_submit,
                  model: str,
-                 prompt: str = "You: "):
+                 prompt: str = "You: ",
+                 auto_spinner_on_submit: bool = True):
         self._terminal = Terminal()
         self._input = InputComponent(prompt=prompt)
         self._history = History()
@@ -44,6 +45,8 @@ class TUI:
         self._lock = threading.Lock()
         self._spinner_thread: threading.Thread | None = None
         self._in_paste = False
+        self._running = False
+        self._auto_spinner_on_submit = auto_spinner_on_submit
 
         self._debug_keys = _env_flag("AVOID_AGENT_DEBUG_KEYS")
         self._debug_keys_path = os.getenv("AVOID_AGENT_DEBUG_KEYS_PATH", "/tmp/avoid-agent-keys.log")
@@ -76,15 +79,20 @@ class TUI:
     def run(self) -> None:
         self._terminal.start(on_resize=self._on_resize)
         try:
+            self._running = True
             self._safe_render()
-            while True:
+            while self._running:
                 data, key = self._read_parsed_key()
                 if self._handle_key(key, data):
                     break
         finally:
+            self._running = False
             sys.stdout.write("\n")
             sys.stdout.flush()
             self._terminal.stop()
+
+    def stop(self) -> None:
+        self._running = False
 
     def push_item(self, item) -> None:
         if isinstance(item, ToolCallItem) and item.id:
@@ -124,6 +132,15 @@ class TUI:
 
     def set_warning(self, text: str | None) -> None:
         self._status.warning = text
+        self._safe_render()
+
+    def set_phase(self, phase: str | None) -> None:
+        self._status.phase = phase
+        self._safe_render()
+
+    def set_progress(self, current: int, total: int) -> None:
+        self._status.progress_current = current
+        self._status.progress_total = total
         self._safe_render()
 
     def append_chunk(self, text: str) -> None:
@@ -227,9 +244,12 @@ class TUI:
                         return True
                     self._conversation.items.append(UserItem(text=text))
                     self._safe_render()
-                    self._start_spinner()
-                    self.on_submit(text)
-                    self._stop_spinner()
+                    if self._auto_spinner_on_submit:
+                        self._start_spinner()
+                        self.on_submit(text)
+                        self._stop_spinner()
+                    else:
+                        self.on_submit(text)
         elif key == "shift+enter":
             self._input.line.insert("\n")
 

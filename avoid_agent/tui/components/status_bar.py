@@ -10,9 +10,26 @@ class StatusBarComponent:
         self.thinking_enabled: bool = False
         self.effort: str = "high"
         self.warning: str | None = None
+        self.phase: str | None = None
+        self.progress_current: int = 0
+        self.progress_total: int = 0
+
+    @staticmethod
+    def _progress_bar(current: int, total: int, width: int = 10) -> str:
+        if total <= 0:
+            return ""
+        current = max(0, min(current, total))
+        filled = int((current / total) * width)
+        bar = "#" * filled + "-" * (width - filled)
+        return f"[{bar}] {current}/{total}"
 
     def render(self, width: int) -> list[str]:
         extras: list[str] = []
+        if self.phase:
+            extras.append(f"phase: {self.phase}")
+        progress = self._progress_bar(self.progress_current, self.progress_total)
+        if progress:
+            extras.append(progress)
         if self.thinking_enabled:
             extras.append("thinking: on")
         if self.effort:

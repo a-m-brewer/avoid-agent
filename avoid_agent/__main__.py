@@ -3,8 +3,12 @@
 import argparse
 import json
 import os
+import queue
+import re
 import subprocess
 import sys
+import threading
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -32,6 +36,381 @@ from avoid_agent.tui.components.conversation import (
     ToolResultItem,
     UserItem,
 )
+
+
+def _count_backlog_totals(repo_root: Path) -> tuple[int, int]:
+    """Return (completed, total) for markdown checklist items in backlog.md."""
+    backlog_path = repo_root / "backlog.md"
+    if not backlog_path.exists():
+        return (0, 0)
+
+    completed = 0
+    total = 0
+    with open(backlog_path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if re.match(r"^- \[( |x|!)\] .+", line):
+                total += 1
+            if re.match(r"^- \[x\] .+", line):
+                completed += 1
+    return (completed, total)
+
+
+def _stream_selfdev_headless_stderr(pipe, tui: TUI, tool_count_ref: list[int]) -> None:
+    """Map headless stderr JSON events into rich TUI updates."""
+    text_buffer = ""
+    suppress_streaming = False
+
+    for raw_line in pipe:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        etype = event.get("type", "")
+
+        if etype == "turn_start":
+            turn = event.get("turn", "?")
+            tui.set_phase(f"turn {turn}")
+            tui.push_item(StatusItem(text=f"turn {turn} started"))
+            tui.set_spinner_message("thinking...")
+
+        elif etype == "text_delta":
+            delta = event.get("text", "")
+            if delta:
+                text_buffer += delta
+                if not suppress_streaming:
+                    if text_buffer.lstrip().startswith("{"):
+                        suppress_streaming = True
+                    else:
+                        tui.append_chunk(delta)
+
+        elif etype == "tool_call_detected":
+            call_id = event.get("id")
+            name = event.get("name", "tool")
+            args = event.get("arguments", {})
+            tui.push_item(ToolCallItem(id=call_id, name=name, arguments=args, status="pending"))
+            tui.set_spinner_message(f"tool detected: {name}")
+
+        elif etype == "tool_execution_start":
+            text_buffer = ""
+            suppress_streaming = False
+            tool_count_ref[0] += 1
+            call_id = event.get("id")
+            name = event.get("name", "tool")
+            args = event.get("arguments", {})
+            tui.push_item(ToolCallItem(id=call_id, name=name, arguments=args, status="running"))
+            if call_id:
+                tui.update_tool_status(call_id, "running")
+            tui.set_spinner_message(f"running tool: {name}")
+
+        elif etype == "tool_result":
+            call_id = event.get("id")
+            name = event.get("name") or "tool"
+            content = str(event.get("content") or "")
+            is_error = bool(event.get("is_error", False))
+            status = "failed" if is_error else "done"
+            if call_id:
+                tui.update_tool_status(call_id, status)
+            tui.push_item(
+                ToolResultItem(
+                    id=call_id,
+                    name=name,
+                    content=content,
+                    status=status,
+                )
+            )
+            tui.reset_spinner_message()
+
+        elif etype == "reasoning":
+            item = event.get("item")
+            summary = "reasoning"
+            if isinstance(item, dict):
+                value = item.get("summary")
+                if isinstance(value, list):
+                    summary = " ".join(str(x) for x in value if x)
+                elif value:
+                    summary = str(value)
+            tui.push_item(StatusItem(text=f"reasoning: {summary}"))
+            tui.set_spinner_message("reasoning...")
+
+        elif etype == "status":
+            message = str(event.get("message") or "")
+            if message:
+                tui.push_item(StatusItem(text=message))
+                tui.set_spinner_message(message)
+
+        elif etype == "structured_action":
+            text_buffer = ""
+            suppress_streaming = False
+            message = event.get("message")
+            if isinstance(message, str) and message.strip():
+                tui.replace_last_assistant(message)
+
+        elif etype == "context_trimmed":
+            message = event.get("message")
+            if isinstance(message, str) and message.strip():
+                tui.push_item(StatusItem(text=message))
+
+        elif etype in ("error", "fatal", "validation_error"):
+            message = str(event.get("message") or etype)
+            tui.report_error(message)
+            tui.reset_spinner_message()
+
+        elif etype == "turn_complete":
+            tokens = event.get("input_tokens")
+            if isinstance(tokens, int):
+                tui.update_tokens(tokens)
+            turn = event.get("turn", "?")
+            tui.push_item(StatusItem(text=f"turn {turn} complete"))
+            tui.set_phase("awaiting feedback")
+
+
+def _run_selfdev_interactive(repo_root: Path, model: str | None, max_turns: int) -> int:
+    """Run one selfdev cycle with live TUI streaming and optional user feedback turns."""
+    from avoid_agent.selfdev import RESTART_EXIT_CODE
+    from avoid_agent.selfdev.loop import (
+        _commit_if_dirty,
+        build_prompt_for_task,
+        cleanup_worktree,
+        create_worktree,
+        detach_worktree,
+        mark_backlog_item,
+        merge_worktree,
+        parse_backlog,
+    )
+    from avoid_agent.selfdev.validate import validate_worktree
+
+    items = parse_backlog(repo_root)
+    if not items:
+        print("No unchecked backlog items. Nothing to do.")
+        return 0
+
+    item = items[0]
+    done_count, total_count = _count_backlog_totals(repo_root)
+    progress_current = done_count + 1
+
+    worktree_path: Path | None = None
+    branch_name = f"selfdev/{re.sub(r'[^a-z0-9]+', '-', item.text.lower())[:50].strip('-')}"
+
+    prompts: queue.Queue[str] = queue.Queue()
+    prompt_counter = [1]
+    worker_done = threading.Event()
+    worker_result: dict[str, object] = {"result": "error", "error": "unexpected"}
+
+    active_model = model or os.getenv("DEFAULT_MODEL", "anthropic/claude-sonnet-4-6")
+    tui = TUI(on_submit=lambda _text: None, model=active_model, auto_spinner_on_submit=False)
+    tui.set_phase("preparing")
+    tui.set_progress(progress_current, total_count)
+    tui.push_item(StatusItem(text=f"task: {item.text}"))
+    tui.push_item(StatusItem(text="Type feedback to send another turn, /done to finish and validate."))
+
+    def on_submit(text: str) -> None:
+        stripped = text.strip()
+        if stripped == "/done":
+            prompts.put("__SELFDEV_DONE__")
+            tui.push_item(StatusItem(text="finishing current run and validating..."))
+            return
+        if stripped == "/abort":
+            prompts.put("__SELFDEV_ABORT__")
+            tui.push_item(StatusItem(text="aborting selfdev run..."))
+            return
+        prompts.put(text)
+        tui.push_item(StatusItem(text=f"queued feedback turn #{prompt_counter[0]}"))
+        prompt_counter[0] += 1
+
+    tui.on_submit = on_submit
+
+    def worker() -> None:
+        nonlocal worktree_path
+        proc = None
+        stderr_thread = None
+        try:
+            tui.set_phase("creating worktree")
+            worktree_path = create_worktree(repo_root, branch_name)
+
+            prompt = build_prompt_for_task(item.text, repo_root, worktree_path)
+
+            cmd = [
+                sys.executable,
+                "-m",
+                "avoid_agent",
+                "headless",
+                "--auto-approve",
+                "--no-session",
+                "--max-turns",
+                str(max_turns),
+            ]
+            if model:
+                cmd.extend(["--model", model])
+
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(worktree_path)
+
+            tui.set_phase("running agent")
+            tui._start_spinner()  # pylint: disable=protected-access
+
+            proc = subprocess.Popen(
+                cmd,
+                cwd=worktree_path,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+
+            tool_count = [0]
+            stderr_thread = threading.Thread(
+                target=_stream_selfdev_headless_stderr,
+                args=(proc.stderr, tui, tool_count),
+                daemon=True,
+            )
+            stderr_thread.start()
+
+            assert proc.stdin is not None
+            assert proc.stdout is not None
+
+            def send_prompt(prompt_text: str) -> None:
+                proc.stdin.write(json.dumps({"prompt": prompt_text}) + "\n")
+                proc.stdin.flush()
+
+            send_prompt(prompt)
+
+            successful_turns = 0
+
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    result = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if not result.get("success"):
+                    worker_result["result"] = "failed"
+                    worker_result["error"] = result.get("error") or "headless run failed"
+                    break
+
+                successful_turns += 1
+                tui.push_item(StatusItem(text=f"turn {successful_turns} completed"))
+
+                tui.push_item(StatusItem(text="waiting for your feedback (/done to continue pipeline)..."))
+                next_prompt = prompts.get()
+
+                if next_prompt is None or next_prompt == "__SELFDEV_DONE__":
+                    worker_result["result"] = "success"
+                    break
+
+                if next_prompt == "__SELFDEV_ABORT__":
+                    worker_result["result"] = "failed"
+                    worker_result["error"] = "aborted by user"
+                    break
+
+                send_prompt(next_prompt)
+                tui.set_phase("running feedback turn")
+
+            if proc.stdin:
+                try:
+                    proc.stdin.write(json.dumps({"command": "quit"}) + "\n")
+                    proc.stdin.flush()
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
+            proc.wait(timeout=10)
+
+            if worker_result.get("result") != "success":
+                error = str(worker_result.get("error") or "unknown error")
+                tui.report_error(error)
+                if worktree_path:
+                    _commit_if_dirty(worktree_path, item.text)
+                mark_backlog_item(repo_root, item, "failed", note=f"{error[:80]} | branch: {branch_name}")
+                detach_worktree(repo_root, branch_name)
+                return
+
+            # Ensure there is a commit if agent only changed working tree files.
+            diff_result = subprocess.run(
+                ["git", "diff", "--stat", "main", "HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=worktree_path,
+                check=False,
+            )
+            if not diff_result.stdout.strip() and not _commit_if_dirty(worktree_path, item.text):
+                mark_backlog_item(repo_root, item, "failed", note="no changes produced")
+                cleanup_worktree(repo_root, branch_name)
+                worker_result["result"] = "failed"
+                worker_result["error"] = "no changes produced"
+                tui.report_error("No changes were produced.")
+                return
+
+            tui.set_phase("validating")
+            validation = validate_worktree(repo_root, worktree_path)
+            if not validation.passed:
+                mark_backlog_item(repo_root, item, "failed", note=f"validation failed | branch: {branch_name}")
+                detach_worktree(repo_root, branch_name)
+                worker_result["result"] = "failed"
+                worker_result["error"] = "validation failed"
+                tui.report_error("Validation failed. Branch preserved for review.")
+                tui.push_item(AssistantItem(text=validation.summary))
+                return
+
+            tui.set_phase("merging")
+            if not merge_worktree(repo_root, branch_name):
+                mark_backlog_item(repo_root, item, "failed", note=f"merge conflict | branch: {branch_name}")
+                detach_worktree(repo_root, branch_name)
+                worker_result["result"] = "failed"
+                worker_result["error"] = "merge conflict"
+                tui.report_error("Merge failed. Branch preserved for review.")
+                return
+
+            mark_backlog_item(repo_root, item, "done")
+            cleanup_worktree(repo_root, branch_name)
+            worker_result["result"] = "restart"
+            tui.set_phase("done")
+            tui.push_item(StatusItem(text=f"Task completed and merged: {item.text}"))
+
+        except Exception as e:  # pylint: disable=broad-except
+            worker_result["result"] = "error"
+            worker_result["error"] = str(e)
+            tui.report_error(str(e))
+            if worktree_path:
+                try:
+                    _commit_if_dirty(worktree_path, item.text)
+                    mark_backlog_item(repo_root, item, "failed", note=f"{str(e)[:80]} | branch: {branch_name}")
+                    detach_worktree(repo_root, branch_name)
+                except Exception:  # pylint: disable=broad-except
+                    pass
+        finally:
+            if stderr_thread:
+                stderr_thread.join(timeout=3)
+            tui._stop_spinner()  # pylint: disable=protected-access
+            worker_done.set()
+            tui.stop()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    tui.run()
+    worker_done.wait(timeout=5)
+
+    result = str(worker_result.get("result") or "error")
+    if result == "restart":
+        return RESTART_EXIT_CODE
+    if result == "success":
+        return RESTART_EXIT_CODE
+    if result in ("failed", "error"):
+        return 1
+    return 0
 
 
 def gather_initial_context() -> tuple[str, str, str]:
@@ -611,8 +990,6 @@ def _headless_fatal(message: str) -> None:
 
 def _run_selfdev(args) -> None:
     """Run the self-improvement loop."""
-    from pathlib import Path
-
     from dotenv import load_dotenv
 
     from avoid_agent.selfdev.loop import run_loop
@@ -620,12 +997,19 @@ def _run_selfdev(args) -> None:
     load_dotenv()
     repo_root = Path(__file__).resolve().parent.parent
     model = args.model or os.getenv("DEFAULT_MODEL")
-    exit_code = run_loop(
-        repo_root=repo_root,
-        model=model,
-        max_turns=args.max_turns,
-        single=args.single,
-    )
+    if getattr(args, "legacy", False):
+        exit_code = run_loop(
+            repo_root=repo_root,
+            model=model,
+            max_turns=args.max_turns,
+            single=args.single,
+        )
+    else:
+        exit_code = _run_selfdev_interactive(
+            repo_root=repo_root,
+            model=model,
+            max_turns=args.max_turns,
+        )
     sys.exit(exit_code)
 
 
@@ -683,12 +1067,16 @@ def main() -> None:
         help="Provider/model for headless agent (e.g. anthropic/claude-sonnet-4-6)",
     )
     selfdev_parser.add_argument(
-        "--max-turns", type=int, default=20,
-        help="Max turns per headless run (default: 20)",
+        "--max-turns", type=int, default=40,
+        help="Max turns per headless run (default: 40)",
     )
     selfdev_parser.add_argument(
         "--single", action="store_true",
         help="Run only one cycle then exit (don't loop)",
+    )
+    selfdev_parser.add_argument(
+        "--legacy", action="store_true",
+        help="Use legacy non-interactive selfdev loop output",
     )
 
     args = parser.parse_args()
