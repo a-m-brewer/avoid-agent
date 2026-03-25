@@ -39,7 +39,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
   python -c "from avoid_agent.agent.tools.finder import find_available_tools; find_available_tools()"
   ```
 
-- [ ] Create sample extension `extensions/file_search/__init__.py`
+- [x] Create sample extension `extensions/file_search/__init__.py`
   **Goal:** Demonstrate the extension pattern and give the agent a `file_search` tool it can use
   to locate code across the codebase.
 
@@ -66,7 +66,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
 
 ## Phase 3: Learnings system (error capture + backlog feeding)
 
-- [ ] Create session learnings capture module `avoid_agent/learnings.py`
+- [x] Create session learnings capture module `avoid_agent/learnings.py`
   **Goal:** A small module that writes timestamped error summaries to `.learnings/sessions/` after
   each headless run. The selfdev loop already reads from this directory (`_gather_learnings()` in
   `avoid_agent/selfdev/loop.py`) — this task creates the write side.
@@ -94,7 +94,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
   python -c "from avoid_agent.learnings import capture_session; print('OK')"
   ```
 
-- [ ] Wire learnings capture into headless mode
+- [x] Wire learnings capture into headless mode
   **Goal:** After each single-turn headless run, log any errors and failed tool calls to `.learnings/`.
 
   **Files to read first:**

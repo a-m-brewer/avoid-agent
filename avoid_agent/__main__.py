@@ -169,6 +169,203 @@ def _stream_selfdev_headless_stderr(pipe, tui: TUI, tool_count_ref: list[int]) -
             tui.set_phase("awaiting feedback")
 
 
+def _run_selfdev_observe(repo_root: Path, model: str | None, max_turns: int) -> int:
+    """Run one selfdev cycle with read-only TUI streaming — no user input, fully autonomous."""
+    from avoid_agent.selfdev import RESTART_EXIT_CODE
+    from avoid_agent.selfdev.loop import (
+        _commit_if_dirty,
+        build_prompt_for_task,
+        cleanup_worktree,
+        create_worktree,
+        detach_worktree,
+        mark_backlog_item,
+        merge_worktree,
+        parse_backlog,
+    )
+    from avoid_agent.selfdev.refine import (
+        find_next_subtask,
+        mark_subtask,
+        update_refined_status,
+    )
+    from avoid_agent.selfdev.validate import validate_worktree
+
+    # Check refined/ for pending sub-tasks first, then fall back to backlog
+    subtask = find_next_subtask(repo_root)
+    backlog_item = None
+
+    if subtask:
+        task_text = subtask.text
+        is_refined = True
+    else:
+        items = parse_backlog(repo_root)
+        if not items:
+            print("No unchecked backlog items or refined sub-tasks. Nothing to do.")
+            return 0
+        backlog_item = items[0]
+        task_text = backlog_item.text
+        is_refined = False
+
+    done_count, total_count = _count_backlog_totals(repo_root)
+    progress_current = done_count + 1
+
+    branch_name = f"selfdev/{re.sub(r'[^a-z0-9]+', '-', task_text.lower())[:50].strip('-')}"
+    worktree_path: Path | None = None
+
+    active_model = model or os.getenv("DEFAULT_MODEL", "anthropic/claude-sonnet-4-6")
+    tui = TUI(on_submit=lambda _text: None, model=active_model, auto_spinner_on_submit=False, read_only=True)
+    tui.set_phase("preparing")
+    tui.set_progress(progress_current, total_count)
+    source_label = f"refined sub-task: {task_text}" if is_refined else f"task: {task_text}"
+    tui.push_item(StatusItem(text=source_label))
+
+    worker_done = threading.Event()
+    worker_result: dict[str, object] = {"result": "error", "error": "unexpected"}
+
+    def _mark_done() -> None:
+        if is_refined and subtask:
+            mark_subtask(subtask.parent_path, subtask.line_number, "done")
+            update_refined_status(subtask.parent_path)
+        elif backlog_item:
+            mark_backlog_item(repo_root, backlog_item, "done")
+
+    def _mark_failed(note: str) -> None:
+        if is_refined and subtask:
+            mark_subtask(subtask.parent_path, subtask.line_number, "failed", note=note)
+            update_refined_status(subtask.parent_path)
+        elif backlog_item:
+            mark_backlog_item(repo_root, backlog_item, "failed", note=note)
+
+    def worker() -> None:
+        nonlocal worktree_path
+        try:
+            tui.set_phase("creating worktree")
+            worktree_path = create_worktree(repo_root, branch_name)
+
+            prompt = build_prompt_for_task(task_text, repo_root, worktree_path)
+
+            cmd = [
+                sys.executable, "-m", "avoid_agent", "headless",
+                "--prompt", prompt,
+                "--auto-approve", "--no-session",
+                "--max-turns", str(max_turns),
+            ]
+            if model:
+                cmd.extend(["--model", model])
+
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(worktree_path)
+
+            tui.set_phase("running agent")
+            tui._start_spinner()  # pylint: disable=protected-access
+
+            proc = subprocess.Popen(
+                cmd, cwd=worktree_path, env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True, bufsize=1,
+            )
+
+            tool_count = [0]
+            stderr_thread = threading.Thread(
+                target=_stream_selfdev_headless_stderr,
+                args=(proc.stderr, tui, tool_count),
+                daemon=True,
+            )
+            stderr_thread.start()
+
+            stdout = proc.stdout.read()
+            proc.wait()
+            stderr_thread.join(timeout=5)
+
+            try:
+                result = json.loads(stdout)
+            except json.JSONDecodeError:
+                result = {"success": False, "error": "Failed to parse agent output"}
+
+            if not result.get("success"):
+                error = result.get("error", "unknown error")
+                tui.report_error(str(error))
+                if worktree_path:
+                    _commit_if_dirty(worktree_path, task_text)
+                _mark_failed(f"{str(error)[:80]} | branch: {branch_name}")
+                detach_worktree(repo_root, branch_name)
+                worker_result["result"] = "failed"
+                worker_result["error"] = error
+                return
+
+            tui.push_item(StatusItem(text=f"agent completed ({len(result.get('tool_calls', []))} tool calls)"))
+
+            # Check for changes
+            diff_result = subprocess.run(
+                ["git", "diff", "--stat", "main", "HEAD"],
+                capture_output=True, text=True, cwd=worktree_path, check=False,
+            )
+            if not diff_result.stdout.strip() and not _commit_if_dirty(worktree_path, task_text):
+                _mark_failed("no changes produced")
+                cleanup_worktree(repo_root, branch_name)
+                worker_result["result"] = "failed"
+                worker_result["error"] = "no changes produced"
+                tui.report_error("No changes were produced.")
+                return
+
+            # Validate
+            tui.set_phase("validating")
+            validation = validate_worktree(repo_root, worktree_path)
+            if not validation.passed:
+                _mark_failed(f"validation failed | branch: {branch_name}")
+                detach_worktree(repo_root, branch_name)
+                worker_result["result"] = "failed"
+                worker_result["error"] = "validation failed"
+                tui.report_error("Validation failed. Branch preserved for review.")
+                tui.push_item(AssistantItem(text=validation.summary))
+                return
+
+            # Merge
+            tui.set_phase("merging")
+            if not merge_worktree(repo_root, branch_name):
+                _mark_failed(f"merge conflict | branch: {branch_name}")
+                detach_worktree(repo_root, branch_name)
+                worker_result["result"] = "failed"
+                worker_result["error"] = "merge conflict"
+                tui.report_error("Merge failed. Branch preserved for review.")
+                return
+
+            _mark_done()
+            cleanup_worktree(repo_root, branch_name)
+            worker_result["result"] = "restart"
+            tui.set_phase("done")
+            tui.push_item(StatusItem(text=f"Task completed and merged: {task_text}"))
+
+        except Exception as e:  # pylint: disable=broad-except
+            worker_result["result"] = "error"
+            worker_result["error"] = str(e)
+            tui.report_error(str(e))
+            if worktree_path:
+                try:
+                    _commit_if_dirty(worktree_path, task_text)
+                    _mark_failed(f"{str(e)[:80]} | branch: {branch_name}")
+                    detach_worktree(repo_root, branch_name)
+                except Exception:  # pylint: disable=broad-except
+                    pass
+        finally:
+            tui._stop_spinner()  # pylint: disable=protected-access
+            worker_done.set()
+            tui.stop()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    tui.run()
+    worker_done.wait(timeout=5)
+
+    result = str(worker_result.get("result") or "error")
+    if result in ("restart", "success"):
+        return RESTART_EXIT_CODE
+    if result in ("failed", "error"):
+        return 1
+    return 0
+
+
 def _run_selfdev_interactive(repo_root: Path, model: str | None, max_turns: int) -> int:
     """Run one selfdev cycle with live TUI streaming and optional user feedback turns."""
     from avoid_agent.selfdev import RESTART_EXIT_CODE
@@ -994,6 +1191,55 @@ def _headless_fatal(message: str) -> None:
     sys.exit(1)
 
 
+def _run_selfdev_operator(repo_root: Path, model: str | None, max_turns: int) -> int:
+    """Run the operator agent with a read-only TUI for observation."""
+    from avoid_agent.selfdev import RESTART_EXIT_CODE
+    from avoid_agent.selfdev.operator import stream_operator_to_tui
+
+    active_model = model or os.getenv("DEFAULT_MODEL", "anthropic/claude-sonnet-4-6")
+    tui = TUI(on_submit=lambda _text: None, model=active_model, auto_spinner_on_submit=False, read_only=True)
+    tui.set_phase("operator starting")
+    tui.push_item(StatusItem(text="Operator agent managing selfdev workflow..."))
+
+    worker_done = threading.Event()
+    worker_result: dict[str, object] = {"success": False}
+
+    def worker() -> None:
+        try:
+            tui._start_spinner()  # pylint: disable=protected-access
+            result = stream_operator_to_tui(
+                repo_root=repo_root,
+                tui=tui,
+                stderr_streamer=_stream_selfdev_headless_stderr,
+                model=model,
+                max_cycles=10,
+                max_turns_per_worker=max_turns,
+            )
+            worker_result.update(result)
+            if result.get("success"):
+                tui.set_phase("operator done")
+                tui.push_item(StatusItem(text="Operator completed successfully."))
+            else:
+                error = result.get("error", "unknown error")
+                tui.report_error(f"Operator failed: {error}")
+        except Exception as e:  # pylint: disable=broad-except
+            worker_result["error"] = str(e)
+            tui.report_error(str(e))
+        finally:
+            tui._stop_spinner()  # pylint: disable=protected-access
+            worker_done.set()
+            tui.stop()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    tui.run()
+    worker_done.wait(timeout=5)
+
+    if worker_result.get("success"):
+        return RESTART_EXIT_CODE
+    return 1
+
+
 def _run_selfdev(args) -> None:
     """Run the self-improvement loop."""
     from dotenv import load_dotenv
@@ -1003,15 +1249,28 @@ def _run_selfdev(args) -> None:
     load_dotenv()
     repo_root = Path(__file__).resolve().parent.parent
     model = args.model or os.getenv("DEFAULT_MODEL")
-    if getattr(args, "legacy", False):
+    if getattr(args, "operator", False):
+        exit_code = _run_selfdev_operator(
+            repo_root=repo_root,
+            model=model,
+            max_turns=args.max_turns,
+        )
+    elif getattr(args, "legacy", False):
         exit_code = run_loop(
             repo_root=repo_root,
             model=model,
             max_turns=args.max_turns,
             single=args.single,
         )
-    else:
+    elif getattr(args, "interactive", False):
         exit_code = _run_selfdev_interactive(
+            repo_root=repo_root,
+            model=model,
+            max_turns=args.max_turns,
+        )
+    else:
+        # Default: observation mode (read-only TUI, autonomous agent)
+        exit_code = _run_selfdev_observe(
             repo_root=repo_root,
             model=model,
             max_turns=args.max_turns,
@@ -1081,8 +1340,16 @@ def main() -> None:
         help="Run only one cycle then exit (don't loop)",
     )
     selfdev_parser.add_argument(
+        "--operator", action="store_true",
+        help="Use operator agent mode (LLM supervisor that refines and delegates)",
+    )
+    selfdev_parser.add_argument(
+        "--interactive", action="store_true",
+        help="Use interactive mode with user feedback turns (default is autonomous observation)",
+    )
+    selfdev_parser.add_argument(
         "--legacy", action="store_true",
-        help="Use legacy non-interactive selfdev loop output",
+        help="Use legacy non-interactive selfdev loop output (console only, no TUI)",
     )
 
     args = parser.parse_args()

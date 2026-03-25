@@ -387,6 +387,10 @@ def build_prompt_for_task(task_text: str, repo_root: Path, worktree_path: Path) 
     # Instructions
     sections.append(
         "## Instructions\n"
+        "- You are running autonomously. Do NOT ask the user for feedback, clarification, "
+        "or approval. Make your best judgment and proceed.\n"
+        "- Do NOT present options or ask 'how would you like me to...' — just do it. "
+        "If unsure about a design decision, pick the simplest approach that works.\n"
         "- Read the relevant code before making changes\n"
         "- Make minimal, focused changes\n"
         "- REMINDER: Any modification to frozen files (listed above) will cause "

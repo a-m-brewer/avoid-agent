@@ -29,7 +29,8 @@ class TUI:
                  on_submit,
                  model: str,
                  prompt: str = "You: ",
-                 auto_spinner_on_submit: bool = True):
+                 auto_spinner_on_submit: bool = True,
+                 read_only: bool = False):
         self._terminal = Terminal()
         self._input = InputComponent(prompt=prompt)
         self._history = History()
@@ -37,6 +38,7 @@ class TUI:
         self._conversation = ConversationComponent()
         self._status = StatusBarComponent(model=model)
         self.on_submit = on_submit
+        self._read_only = read_only
 
         # Spinner
         self._spinner = SpinnerComponent()
@@ -81,10 +83,17 @@ class TUI:
         try:
             self._running = True
             self._safe_render()
-            while self._running:
-                data, key = self._read_parsed_key()
-                if self._handle_key(key, data):
-                    break
+            if self._read_only:
+                # In read-only mode, only handle ctrl+c to exit.
+                while self._running:
+                    data, key = self._read_parsed_key()
+                    if key in ("ctrl+c", "ctrl+d"):
+                        break
+            else:
+                while self._running:
+                    data, key = self._read_parsed_key()
+                    if self._handle_key(key, data):
+                        break
         finally:
             self._running = False
             sys.stdout.write("\n")
@@ -198,6 +207,24 @@ class TUI:
     def _render(self) -> None:
         self._terminal.hide_cursor()
         width = self._terminal.columns
+        if self._read_only:
+            lines = (
+                self._conversation.render(width)
+                + (self._spinner.render(width) if self._busy else [])
+                + self._status.render(width)
+            )
+            if self._renderer.has_content:
+                self._terminal.write("\x1b8")
+            self._renderer.render(lines)
+            self._terminal.write("\x1b7")
+
+            # Position cursor at bottom of status bar
+            status_lines = self._status.render(width)
+            rows_up = self._renderer.physical_rows(status_lines)
+            self._terminal.move_up(rows_up)
+            self._terminal.write("\r")
+            return
+
         lines = (
             self._conversation.render(width)
             + (self._spinner.render(width) if self._busy else [])

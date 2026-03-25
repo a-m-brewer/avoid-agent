@@ -11,6 +11,7 @@
 unrestricted:
   - "skills/**"
   - "backlog.md"
+  - "refined/**"
   - ".learnings/**"
 
 # Files/directories the agent can modify via worktree + validation (Tier 2 & 3)
