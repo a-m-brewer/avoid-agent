@@ -113,6 +113,8 @@ class AnthropicProvider(Provider):
         model: str,
         max_tokens: int,
         *,
+        api_key: str | None = None,
+        auth_token: str | None = None,
         thinking_enabled: bool | None = None,
         effort: str | None = None,
     ):
@@ -123,7 +125,10 @@ class AnthropicProvider(Provider):
             thinking_enabled=thinking_enabled,
             effort=effort,  # Anthropic currently uses 'thinking' only; keep for API symmetry
         )
-        self._client = Anthropic()
+        if auth_token:
+            self._client = Anthropic(auth_token=auth_token)
+        else:
+            self._client = Anthropic(api_key=api_key)
 
     def stream(
         self,

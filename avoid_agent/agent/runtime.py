@@ -352,8 +352,16 @@ class ExecutionController:
 
         if structured.tool == "complete":
             evidence = structured.args.get("evidence")
-            if not isinstance(evidence, list) or not evidence:
-                return "Invalid complete action: args.evidence must be a non-empty list."
+            if not isinstance(evidence, list):
+                return "Invalid complete action: args.evidence must be a list."
+
+            # Allow empty evidence only when no tools were executed this turn
+            # (e.g. a conversational reply that genuinely needed no tool calls).
+            if not evidence and verified_tool_ids:
+                return (
+                    "Invalid complete action: args.evidence must be a non-empty list "
+                    "when tool calls were made this turn."
+                )
 
             missing = [
                 evidence_id

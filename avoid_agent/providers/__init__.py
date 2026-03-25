@@ -12,12 +12,18 @@ from typing import Iterator, Literal, TypeAlias
 import urllib.request
 
 from avoid_agent.providers.openai_codex_oauth import get_valid_credentials, load_credentials
+from avoid_agent.providers.anthropic_oauth import load_credentials as load_anthropic_credentials
 
 from avoid_agent.agent.tools import ToolDefinition
 
 
 AVAILABLE_MODELS: dict[str, list[str]] = {
     "anthropic": [
+        "claude-sonnet-4-6",
+        "claude-opus-4-1",
+        "claude-haiku-4-5",
+    ],
+    "anthropic-oauth": [
         "claude-sonnet-4-6",
         "claude-opus-4-1",
         "claude-haiku-4-5",
@@ -145,6 +151,20 @@ def _list_dynamic_models() -> list[str]:
                 providers_to_models["openai-codex"] = models
         except Exception:  # pylint: disable=broad-except
             pass
+
+    anthropic_oauth_creds = load_anthropic_credentials()
+    if anthropic_oauth_creds:
+        try:
+            from avoid_agent.providers.anthropic import list_models as list_anthropic_models
+
+            models = list_anthropic_models(api_key=anthropic_oauth_creds["access"])
+            if models:
+                providers_to_models["anthropic-oauth"] = models
+        except Exception:  # pylint: disable=broad-except
+            pass
+    if "anthropic-oauth" not in providers_to_models:
+        # Always surface oauth models so the login flow is discoverable even without saved creds
+        providers_to_models["anthropic-oauth"] = AVAILABLE_MODELS["anthropic-oauth"]
 
     out: list[str] = []
     for provider_name, models in providers_to_models.items():
@@ -539,6 +559,20 @@ def get_provider(
             system=system,
             model=model_name,
             max_tokens=internal_max_tokens,
+            thinking_enabled=thinking_enabled,
+            effort=effort,
+        )
+
+    if provider_name == "anthropic-oauth":
+        # pylint: disable=import-outside-toplevel
+        from avoid_agent.providers.anthropic import AnthropicProvider
+        from avoid_agent.providers.anthropic_oauth import get_valid_credentials as get_anthropic_creds
+        anthropic_creds = get_anthropic_creds()
+        return AnthropicProvider(
+            system=system,
+            model=model_name,
+            max_tokens=internal_max_tokens,
+            auth_token=anthropic_creds["access"],
             thinking_enabled=thinking_enabled,
             effort=effort,
         )

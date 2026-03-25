@@ -115,7 +115,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
   ls .learnings/sessions/ 2>/dev/null || echo "directory empty or missing — correct"
   ```
 
-- [ ] Create learnings analyzer `avoid_agent/learnings_analyzer.py`
+- [x] Create learnings analyzer `avoid_agent/learnings_analyzer.py`
   **Goal:** Scan `.learnings/sessions/` and surface recurring error patterns as plain-English
   backlog item suggestions. The selfdev startup log can print these so the operator sees them.
 
@@ -142,7 +142,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
   python -c "from avoid_agent.learnings_analyzer import analyze; print(analyze.__doc__)"
   ```
 
-- [ ] Add `/learnings` slash command to TUI mode
+- [x] Add `/learnings` slash command to TUI mode
   **Goal:** Let the user inspect recent session errors and get backlog suggestions without leaving the TUI.
 
   **Files to read first:**
@@ -310,3 +310,282 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
   `sudo systemctl enable --now avoid-agent-selfdev`.
 
   **Verify:** The file parses as valid INI (no Python needed — just review it reads correctly).
+
+## Phase 6: Context Engineering Improvements
+
+Inspired by [HumanLayer/CodeLayer](https://github.com/humanlayer/humanlayer) research:
+12 Factor Agents, Advanced Context Engineering, Context-Efficient Backpressure, and Harness Engineering.
+
+- [ ] Implement context-efficient backpressure for bash output
+  **Goal:** Suppress verbose passing output from `run_bash` so successful commands consume minimal
+  context tokens, preserving the context window for useful information. Based on HumanLayer's
+  `run_silent()` pattern: "every line of `PASS` is waste."
+
+  **Files to read first:**
+  - `avoid_agent/agent/tools/core.py` — study `run_bash()` (the `@tool` function that calls
+    `subprocess.run`); note how `ToolRunResult` wraps content and proof details
+  - `avoid_agent/agent/runtime.py` — see how `_tool_result_is_error()` checks `content.startswith("Error:")`
+    to understand what downstream code expects from tool output format
+
+  **File to modify:** `avoid_agent/agent/tools/core.py`
+
+  **What to change:** In `run_bash()`, when `result.returncode == 0`:
+  - Count the lines of stdout (`stdout_lines = result.stdout.count('\n')`)
+  - If `stdout_lines > 20`, replace the full stdout with a compact summary:
+    `"Exit code: 0 (success, {stdout_lines} lines of output suppressed — re-run with verbose flag if needed)"`
+  - Keep stderr in the output regardless (warnings matter even on success)
+  - Add a `_BASH_QUIET_THRESHOLD = 20` constant near `_PREVIEW_LIMIT`
+  - The proof details already capture `stdout_preview` and `stderr_preview` — no change needed there
+
+  **Verify:**
+  ```
+  python -c "
+  from avoid_agent.agent.tools.core import run_bash
+  result = run_bash(command='seq 1 100')
+  print(repr(result))
+  assert 'suppressed' in str(result), 'Expected suppressed output for long successful command'
+  "
+  ```
+
+- [ ] Add proactive compaction checkpoints
+  **Goal:** Trigger context compaction at ~50% token utilization rather than waiting until the
+  budget is exceeded. HumanLayer targets 40-60% utilization with "intentional compaction" to keep
+  context fresh and high-relevance throughout long sessions.
+
+  **Files to read first:**
+  - `avoid_agent/agent/context.py` — read `prepare_context()` to understand the current threshold
+    logic; it only compacts when `estimate_tokens(messages) > token_budget`
+  - `avoid_agent/agent/runtime.py` — read `_prepare_messages()` (calls `prepare_context`) and the
+    `AgentRuntime.__init__` where `token_budget` is set (default 100,000)
+
+  **File to modify:** `avoid_agent/agent/context.py`
+
+  **What to change:** In `prepare_context()`:
+  - Add a `proactive_threshold: float = 0.5` parameter
+  - Before the existing over-budget check, add: if `estimate_tokens(messages) > token_budget * proactive_threshold`
+    AND strategy includes `"compact"`, run compaction even though we're not over budget
+  - This ensures the context stays in the 40-60% utilization sweet spot
+  - Add a `_PROACTIVE_COMPACTION_THRESHOLD = 0.5` module-level constant
+
+  **Verify:**
+  ```
+  python -c "
+  from avoid_agent.agent.context import prepare_context, estimate_tokens
+  from avoid_agent.providers import UserMessage
+  # Create messages that are ~60% of a small budget
+  msgs = [UserMessage(text='x' * 2400)]  # ~600 tokens
+  result = prepare_context(msgs, token_budget=1000, strategy='compact+window', summarize=lambda p: 'summary')
+  print(f'Action: {result.action}, tokens: {result.original_tokens} -> {result.trimmed_tokens}')
+  "
+  ```
+
+- [ ] Add consecutive error spin-out protection
+  **Goal:** Detect when the agent is stuck in an error loop (e.g., repeatedly hitting the same
+  `OSError` or permission issue) and inject a coaching message after 3 consecutive tool errors,
+  telling it to try a different approach or declare a blocker.
+
+  **Files to read first:**
+  - `avoid_agent/agent/runtime.py` — read `run_user_turn()` carefully; note `invalid_step_retries`
+    (line 629) tracks retries for malformed terminal messages, but there is no tracking for
+    consecutive tool-level `is_error=True` results
+  - `avoid_agent/agent/runtime.py` — read `ExecutionController.execute_tool_call()` to see how
+    `is_error` is set on `ToolResultMessage`
+
+  **File to modify:** `avoid_agent/agent/runtime.py`
+
+  **What to change:** In `run_user_turn()`:
+  - Add `consecutive_tool_errors = 0` counter alongside `invalid_step_retries`
+  - After each tool result is appended, check `tool_result.is_error`:
+    - If error: increment `consecutive_tool_errors`
+    - If success: reset to 0
+  - When `consecutive_tool_errors >= 3`, inject a coaching `UserMessage`:
+    `"[EXECUTION CONTROLLER] Warning: 3 consecutive tool errors detected. You appear to be stuck. "
+    "Try a fundamentally different approach, or declare a blocker if you cannot proceed."`
+  - Reset the counter after injecting the coaching message
+  - Add `_MAX_CONSECUTIVE_TOOL_ERRORS = 3` constant near `MAX_INVALID_STEP_RETRIES`
+
+  **Verify:**
+  ```
+  python -c "from avoid_agent.agent.runtime import _MAX_CONSECUTIVE_TOOL_ERRORS; print('OK:', _MAX_CONSECUTIVE_TOOL_ERRORS)"
+  ```
+
+- [ ] Implement progressive disclosure for AGENTS.md
+  **Goal:** Shrink the always-loaded `AGENTS.md` to ~30 lines of universally relevant content
+  (identity, run command, design philosophy). Move verbose sections (supervision workflow, event
+  monitoring, fixes table) into `agent_docs/` reference files that the agent can `read_file`
+  on demand. HumanLayer keeps their CLAUDE.md under 60 lines.
+
+  **Files to read first:**
+  - `AGENTS.md` — identify which sections are needed every turn vs. only when doing supervision
+  - `avoid_agent/prompts/system_prompt.py` — see how `context_files` are embedded; understand
+    the `ContextFile` dataclass and where files are injected into the prompt
+
+  **Files to modify:**
+  - `AGENTS.md` — remove supervision workflow, event monitoring, and fixes table
+  - Create `agent_docs/supervision-workflow.md` — moved content
+  - Create `agent_docs/event-monitoring.md` — moved content
+
+  **What to change:**
+  - Keep in `AGENTS.md`: Project intent, Running the agent, Environment, Design philosophy
+  - Add a "Reference docs" section listing the `agent_docs/` files with one-line descriptions
+  - Move "Testing the agent with Claude Code / Codex" section to `agent_docs/supervision-workflow.md`
+  - Move "Event monitoring" section to `agent_docs/event-monitoring.md`
+  - The agent can `read_file agent_docs/supervision-workflow.md` when it needs that context
+
+  **Verify:** `wc -l AGENTS.md` should be ~30 lines. The moved files should exist and contain
+  the original content.
+
+- [ ] Add conditional instruction blocks to system prompt
+  **Goal:** Wrap context-dependent system prompt sections in `<important if="...">` XML tags
+  so the model applies them only when relevant. HumanLayer found this significantly improves
+  instruction adherence in long CLAUDE.md files.
+
+  **Files to read first:**
+  - `avoid_agent/prompts/system_prompt.py` — read `build_system_prompt()` and `SystemPromptOptions`
+    to understand how sections are assembled; note `_section()` helper
+  - `avoid_agent/agent/runtime.py` — see where `SystemPromptOptions` is constructed to understand
+    what data is available at prompt-build time
+
+  **File to modify:** `avoid_agent/prompts/system_prompt.py`
+
+  **What to change:**
+  - Add `conditional_sections: list[tuple[str, str]] | None = None` to `SystemPromptOptions`
+    where each tuple is `(condition, content)` — e.g., `("you are writing or modifying tests", "Use run_bash to run pytest...")`
+  - In `build_system_prompt()`, append conditional sections wrapped as:
+    `<important if="{condition}">\n{content}\n</important>`
+  - Add 2-3 default conditional sections for common scenarios:
+    - Testing: hints about running pytest, checking exit codes
+    - Git operations: commit message format, branch naming
+    - File creation: check if file exists first, use write_file not bash
+
+  **Verify:**
+  ```
+  python -c "
+  from avoid_agent.prompts.system_prompt import build_system_prompt, SystemPromptOptions
+  opts = SystemPromptOptions(conditional_sections=[('writing tests', 'Use pytest -x')])
+  prompt = build_system_prompt(opts)
+  assert '<important if=' in prompt, 'Expected conditional block'
+  print('OK')
+  "
+  ```
+
+- [ ] Add sub-agent context firewall for research
+  **Goal:** Add a `research_query` tool that spawns a fresh headless agent instance to answer
+  a question, returning only the final answer to the parent context. Intermediate tool calls
+  and file reads stay in the sub-agent's context window, never polluting the parent's. This is
+  HumanLayer's "context firewall" pattern.
+
+  **Files to read first:**
+  - `avoid_agent/selfdev/operator.py` — study how the operator spawns worker agents via
+    `subprocess` in headless mode; this is the existing sub-process pattern to follow
+  - `avoid_agent/agent/tools/core.py` — understand the `@tool` decorator and `ToolRunResult`
+    pattern for adding a new tool
+  - `avoid_agent/__main__.py` — understand the headless CLI arguments (`--prompt`, `--auto-approve`,
+    `--no-session`, `--model`) so the sub-agent invocation matches
+
+  **File to create:** `avoid_agent/agent/tools/research.py`
+
+  **What to implement:**
+  ```python
+  @tool
+  def research_query(
+      question: Annotated[str, "The research question to answer"],
+      scope: Annotated[str, "Focus area: 'codebase', 'git_history', or 'general'"] = "codebase",
+  ) -> str:
+      """Spawn a sub-agent to research a question without cluttering the current context."""
+  ```
+  - Run `python -m avoid_agent headless --prompt <question> --auto-approve --no-session` as subprocess
+  - Parse the stdout JSON result for `assistant_text`
+  - Return only the final text answer via `ToolRunResult`
+  - Set a timeout (60 seconds) to prevent runaway sub-agents
+  - Cap sub-agent turns (e.g., `--max-turns 5`) if the CLI supports it
+
+  **File to modify:** `avoid_agent/agent/tools/core.py` — import the research module so it
+  auto-registers, or add it to extension discovery
+
+  **Verify:**
+  ```
+  python -c "
+  from avoid_agent.agent.tools.finder import find_available_tools
+  names = [t.name for t in find_available_tools()]
+  assert 'research_query' in names, f'not found in {names}'
+  print('OK')
+  "
+  ```
+
+- [ ] Formalize stateless reducer pattern for agent turns
+  **Goal:** Extract the core agent loop into a pure function `reduce_turn(messages, input, config) -> messages`
+  that takes immutable input and returns new messages without side effects. This enables
+  deterministic replay, fork-at-any-point debugging, and simpler testing. Based on 12 Factor
+  Agents Factor 12: "Make your agent a stateless reducer."
+
+  **Files to read first:**
+  - `avoid_agent/agent/runtime.py` — read `AgentRuntime.run_user_turn()` end-to-end; note which
+    state is truly mutable (the `run_messages` list) vs. configuration (provider, controller, budget)
+  - `avoid_agent/session.py` — understand how sessions serialize/deserialize message lists
+
+  **File to modify:** `avoid_agent/agent/runtime.py`
+
+  **What to change:**
+  - Create a `@dataclass(frozen=True)` called `TurnConfig` holding: provider, tool_definitions,
+    allowed_prefixes, context_strategy, token_budget, tool_choice
+  - Extract a module-level function:
+    ```python
+    def reduce_turn(messages: list[Message], user_input: str, config: TurnConfig) -> RunTurnResult:
+    ```
+  - `AgentRuntime.run_user_turn()` becomes a thin wrapper that calls `reduce_turn()` with its config
+  - The function should be side-effect-free except for tool execution (which is inherently effectful)
+  - Event emission moves to the wrapper, not the pure function (or accepts an optional callback)
+
+  **Verify:**
+  ```
+  python -c "
+  from avoid_agent.agent.runtime import reduce_turn, TurnConfig
+  print('reduce_turn is callable:', callable(reduce_turn))
+  print('TurnConfig fields:', [f.name for f in TurnConfig.__dataclass_fields__.values()])
+  "
+  ```
+
+- [ ] Add `request_human_input` tool (human-as-tool pattern)
+  **Goal:** Define a structured tool the agent can call to explicitly request human input,
+  specifying the question, urgency, and expected response format. Based on 12 Factor Agents
+  Factor 7: "Contact humans with tool calls." Replaces implicit human interaction with an
+  explicit, structured mechanism.
+
+  **Files to read first:**
+  - `avoid_agent/agent/tools/core.py` — follow the `@tool` and `ToolRunResult` pattern
+  - `avoid_agent/__main__.py` — study how the TUI handles user input in `on_submit()` and how
+    `request_permission` callback works; the new tool needs a similar callback mechanism
+  - `avoid_agent/agent/runtime.py` — see `ExecutionController.__init__` for how `request_permission`
+    callback is threaded through; follow this pattern for a `request_human_input` callback
+
+  **Files to modify:**
+  - `avoid_agent/agent/tools/core.py` — add the tool function
+  - `avoid_agent/agent/runtime.py` — add `request_human_input` callback to `ExecutionController`
+    and `AgentRuntime`
+  - `avoid_agent/__main__.py` — wire the callback to the TUI input prompt in interactive mode;
+    in headless mode, return a blocker result
+
+  **What to implement:**
+  ```python
+  @tool
+  def request_human_input(
+      question: Annotated[str, "The question to ask the human"],
+      urgency: Annotated[str, "Priority level: 'low', 'medium', or 'high'"] = "medium",
+      format: Annotated[str, "Expected response format: 'yes_no', 'free_text', or 'choice'"] = "free_text",
+  ) -> str:
+      """Ask the human operator a question and wait for their response."""
+  ```
+  - In TUI mode: display the question with urgency indicator, collect response, return it
+  - In headless mode: return `ToolRunResult(content="Error: Human input not available in headless mode")`
+  - The tool must use a callback (like `request_permission`) since it needs TUI access
+
+  **Verify:**
+  ```
+  python -c "
+  from avoid_agent.agent.tools.finder import find_available_tools
+  names = [t.name for t in find_available_tools()]
+  assert 'request_human_input' in names, f'not found in {names}'
+  print('OK')
+  "
+  ```
