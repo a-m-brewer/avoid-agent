@@ -8,6 +8,8 @@ import re
 import subprocess
 import sys
 import threading
+import time
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -1191,6 +1193,22 @@ def _headless_fatal(message: str) -> None:
     sys.exit(1)
 
 
+def _parse_rate_limit_wait(error_str: str) -> int | None:
+    """Return seconds to wait if error_str is a 429 rate limit error, else None."""
+    if "429" not in error_str:
+        return None
+    brace = error_str.find("{")
+    if brace == -1:
+        return 60
+    try:
+        body = json.loads(error_str[brace:])
+        err = body.get("error", body)
+        secs = int(err.get("resets_in_seconds", 0))
+        return max(secs, 60)
+    except Exception:  # pylint: disable=broad-except
+        return 60
+
+
 def _run_selfdev_operator(repo_root: Path, model: str | None, max_turns: int) -> int:
     """Run the operator agent with a read-only TUI for observation."""
     from avoid_agent.selfdev import RESTART_EXIT_CODE
@@ -1204,24 +1222,58 @@ def _run_selfdev_operator(repo_root: Path, model: str | None, max_turns: int) ->
     worker_done = threading.Event()
     worker_result: dict[str, object] = {"success": False}
 
+    _MAX_RATE_LIMIT_RETRIES = 5
+
     def worker() -> None:
+        rate_limit_retries = 0
         try:
             tui._start_spinner()  # pylint: disable=protected-access
-            result = stream_operator_to_tui(
-                repo_root=repo_root,
-                tui=tui,
-                stderr_streamer=_stream_selfdev_headless_stderr,
-                model=model,
-                max_cycles=10,
-                max_turns_per_worker=max_turns,
-            )
-            worker_result.update(result)
-            if result.get("success"):
-                tui.set_phase("operator done")
-                tui.push_item(StatusItem(text="Operator completed successfully."))
-            else:
-                error = result.get("error", "unknown error")
-                tui.report_error(f"Operator failed: {error}")
+            while True:
+                result = stream_operator_to_tui(
+                    repo_root=repo_root,
+                    tui=tui,
+                    stderr_streamer=_stream_selfdev_headless_stderr,
+                    model=model,
+                    max_cycles=10,
+                    max_turns_per_worker=max_turns,
+                )
+                worker_result.update(result)
+
+                if result.get("success"):
+                    tui.set_phase("operator done")
+                    tui.push_item(StatusItem(text="Operator completed successfully."))
+                    break
+
+                error = str(result.get("error", "unknown error"))
+                wait_secs = _parse_rate_limit_wait(error)
+
+                if wait_secs is None or rate_limit_retries >= _MAX_RATE_LIMIT_RETRIES:
+                    tui.report_error(f"Operator failed: {error}")
+                    break
+
+                rate_limit_retries += 1
+                wait_with_buffer = wait_secs + 60
+                resume_time = datetime.fromtimestamp(time.time() + wait_with_buffer)
+                tui.set_phase("rate limited")
+                tui.push_item(StatusItem(
+                    text=(
+                        f"Usage limit reached. Resuming at {resume_time.strftime('%H:%M:%S')}. "
+                        f"Waiting {wait_with_buffer}s "
+                        f"(attempt {rate_limit_retries}/{_MAX_RATE_LIMIT_RETRIES})..."
+                    )
+                ))
+
+                remaining = wait_with_buffer
+                while remaining > 0:
+                    chunk = min(remaining, 60)
+                    time.sleep(chunk)
+                    remaining -= chunk
+                    if remaining > 0:
+                        tui.set_phase(f"resuming in {remaining}s")
+
+                tui.set_phase("operator restarting")
+                tui.push_item(StatusItem(text="Resuming operator after rate limit reset..."))
+                tui._start_spinner()  # pylint: disable=protected-access
         except Exception as e:  # pylint: disable=broad-except
             worker_result["error"] = str(e)
             tui.report_error(str(e))
