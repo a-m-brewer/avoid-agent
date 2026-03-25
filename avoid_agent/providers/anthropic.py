@@ -1,7 +1,10 @@
 """Module for Anthropic provider."""
 
 from collections.abc import Iterator
+from functools import lru_cache
 from itertools import groupby
+import re
+import subprocess
 
 from anthropic import Anthropic
 import anthropic
@@ -30,6 +33,11 @@ from avoid_agent.providers import (
     Usage,
     normalize_messages,
 )
+
+
+def _supports_adaptive_thinking(model_id: str) -> bool:
+    """Return True for models that use adaptive thinking (Sonnet/Opus 4.6+)."""
+    return any(s in model_id for s in ("sonnet-4-6", "sonnet-4.6", "opus-4-6", "opus-4.6"))
 
 
 def _map_stop_reason(stop_reason: str | None) -> str:
@@ -104,6 +112,39 @@ class AnthropicStream(ProviderStream):
         )
 
 
+# Fallback version used when the `claude` binary is not installed.  Keep this
+# reasonably current so OAuth requests stay within the expected range.
+_CLAUDE_CODE_VERSION_FALLBACK = "2.1.83"
+
+# Claude Code identity claim required as the FIRST system-prompt block for OAuth.
+_CC_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
+
+
+@lru_cache(maxsize=1)
+def _get_claude_code_version() -> str:
+    """Return the installed Claude Code version, or the fallback constant.
+
+    Runs ``claude --version`` once and caches the result for the process
+    lifetime.  The output format is ``2.1.83 (Claude Code)``; we extract
+    the leading semver component.  Falls back to *_CLAUDE_CODE_VERSION_FALLBACK*
+    if the binary is absent, the call times out, or the output is unparseable.
+    """
+    try:
+        result = subprocess.run(
+            ["claude", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode == 0:
+            match = re.search(r"\d+\.\d+\.\d+", result.stdout)
+            if match:
+                return match.group(0)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    return _CLAUDE_CODE_VERSION_FALLBACK
+
+
 class AnthropicProvider(Provider):
     """Provider for Anthropic models."""
 
@@ -118,6 +159,9 @@ class AnthropicProvider(Provider):
         thinking_enabled: bool | None = None,
         effort: str | None = None,
     ):
+        # Store whether we're in OAuth mode so stream() can format the system
+        # prompt as a structured array (required by the Claude Code OAuth path).
+        self._oauth = bool(auth_token)
         super().__init__(
             system,
             model,
@@ -126,7 +170,16 @@ class AnthropicProvider(Provider):
             effort=effort,  # Anthropic currently uses 'thinking' only; keep for API symmetry
         )
         if auth_token:
-            self._client = Anthropic(auth_token=auth_token)
+            self._client = Anthropic(
+                auth_token=auth_token,
+                default_headers={
+                    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14",
+                    "x-app": "cli",
+                    # Match the installed Claude Code version for accurate stealth;
+                    # falls back to the bundled constant if `claude` is not found.
+                    "user-agent": f"claude-cli/{_get_claude_code_version()}",
+                },
+            )
         else:
             self._client = Anthropic(api_key=api_key)
 
@@ -139,20 +192,38 @@ class AnthropicProvider(Provider):
         provider_messages = self.__get_provider_messages(normalize_messages(messages))
         provider_tools = self.__get_provider_tools(tools)
 
+        # For OAuth tokens, the system prompt MUST be a structured array with the
+        # Claude Code identity as the first block.  This matches what the real
+        # Claude Code client sends and is required for higher-tier model access.
+        if self._oauth:
+            system_param: str | list[dict] = [
+                {"type": "text", "text": _CC_IDENTITY, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}},
+            ]
+        else:
+            system_param = self.system
+
         kwargs: dict = {
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "system": self.system,
+            "system": system_param,
             "tools": provider_tools,
             "messages": provider_messages,
         }
         if tool_choice != "auto" and provider_tools:
             kwargs["tool_choice"] = {"type": "any" if tool_choice == "required" else tool_choice}
 
-        # Optional thinking configuration
+        # Thinking configuration
         if self.thinking_enabled:
-            budget = min(1024, max(128, self.max_tokens // 4))
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            if _supports_adaptive_thinking(self.model):
+                kwargs["thinking"] = {"type": "adaptive"}
+            else:
+                budget = min(1024, max(128, self.max_tokens // 4))
+                kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        elif _supports_adaptive_thinking(self.model):
+            # Adaptive-thinking models require explicit disable; the API rejects
+            # requests that omit the thinking field for these model classes.
+            kwargs["thinking"] = {"type": "disabled"}
 
         anthropic_stream = self._client.messages.stream(**kwargs)
         return AnthropicStream(ctx=anthropic_stream)

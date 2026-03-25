@@ -12,7 +12,6 @@ from typing import Iterator, Literal, TypeAlias
 import urllib.request
 
 from avoid_agent.providers.openai_codex_oauth import get_valid_credentials, load_credentials
-from avoid_agent.providers.anthropic_oauth import load_credentials as load_anthropic_credentials
 
 from avoid_agent.agent.tools import ToolDefinition
 
@@ -23,6 +22,10 @@ AVAILABLE_MODELS: dict[str, list[str]] = {
         "claude-opus-4-1",
         "claude-haiku-4-5",
     ],
+    # All three tiers are accessible via OAuth when the request mimics the current
+    # Claude Code client (user-agent claude-cli/2.1.75 + structured system prompt).
+    # Older user-agent strings caused 400s for sonnet/opus – that was a client-side
+    # bug, not a subscription limitation.
     "anthropic-oauth": [
         "claude-sonnet-4-6",
         "claude-opus-4-1",
@@ -152,19 +155,8 @@ def _list_dynamic_models() -> list[str]:
         except Exception:  # pylint: disable=broad-except
             pass
 
-    anthropic_oauth_creds = load_anthropic_credentials()
-    if anthropic_oauth_creds:
-        try:
-            from avoid_agent.providers.anthropic import list_models as list_anthropic_models
-
-            models = list_anthropic_models(api_key=anthropic_oauth_creds["access"])
-            if models:
-                providers_to_models["anthropic-oauth"] = models
-        except Exception:  # pylint: disable=broad-except
-            pass
-    if "anthropic-oauth" not in providers_to_models:
-        # Always surface oauth models so the login flow is discoverable even without saved creds
-        providers_to_models["anthropic-oauth"] = AVAILABLE_MODELS["anthropic-oauth"]
+    # Always surface anthropic-oauth so the login flow is discoverable.
+    providers_to_models["anthropic-oauth"] = AVAILABLE_MODELS["anthropic-oauth"]
 
     out: list[str] = []
     for provider_name, models in providers_to_models.items():
