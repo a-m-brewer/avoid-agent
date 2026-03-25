@@ -674,6 +674,63 @@ def _display_text_for_assistant_message(message: AssistantMessage) -> str:
     return structured.plan
 
 
+def _list_learning_session_files(learnings_dir: Path) -> list[Path]:
+    if not learnings_dir.exists() or not learnings_dir.is_dir():
+        return []
+    return sorted(
+        (path for path in learnings_dir.glob("*.md") if path.is_file()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+
+
+def _extract_recent_learning_errors(session_files: list[Path], limit: int = 3) -> list[str]:
+    recent_errors: list[str] = []
+    for session_file in session_files:
+        in_errors_section = False
+        for line in session_file.read_text(encoding="utf-8").splitlines():
+            stripped_line = line.strip()
+            if not in_errors_section:
+                if stripped_line.lower() == "## errors":
+                    in_errors_section = True
+                continue
+            if stripped_line.startswith("## "):
+                break
+            if stripped_line:
+                recent_errors.append(stripped_line)
+            if len(recent_errors) >= limit:
+                return recent_errors[:limit]
+    return recent_errors[:limit]
+
+
+def _clear_learning_session_files(learnings_dir: Path) -> int:
+    removed_count = 0
+    if learnings_dir.exists() and learnings_dir.is_dir():
+        for session_file in learnings_dir.glob("*.md"):
+            if session_file.is_file():
+                session_file.unlink()
+                removed_count += 1
+    return removed_count
+
+
+def _format_learning_suggestions(suggestions: list[str]) -> str:
+    if not suggestions:
+        return "No suggestions yet."
+    return "Suggestions:\n- " + "\n- ".join(suggestions)
+
+
+def _build_learnings_report(learnings_dir: Path) -> str:
+    session_files = _list_learning_session_files(learnings_dir)
+    recent_errors = _extract_recent_learning_errors(session_files, limit=3)
+
+    report = [f"Learnings sessions: {len(session_files)}"]
+    if recent_errors:
+        report.append("Recent errors:\n- " + "\n- ".join(recent_errors))
+    else:
+        report.append("Recent errors: none")
+    return "\n".join(report)
+
+
 def _export_prompt_command(output: str) -> None:
     cwd, git_status, top_level_structure = gather_initial_context()
     written = export_system_prompt_markdown(
@@ -886,12 +943,7 @@ def _run_agent() -> None:
             learnings_dir = Path(cwd) / ".learnings" / "sessions"
 
             if stripped == "/learnings clear":
-                removed_count = 0
-                if learnings_dir.exists() and learnings_dir.is_dir():
-                    for session_file in learnings_dir.glob("*.md"):
-                        if session_file.is_file():
-                            session_file.unlink()
-                            removed_count += 1
+                removed_count = _clear_learning_session_files(learnings_dir)
                 tui.report_info(f"Cleared {removed_count} learning session file(s).")
                 return
 
@@ -899,45 +951,11 @@ def _run_agent() -> None:
                 from avoid_agent.learnings_analyzer import analyze
 
                 suggestions = analyze(learnings_dir)
-                if suggestions:
-                    tui.report_info("Suggestions:\n- " + "\n- ".join(suggestions))
-                else:
-                    tui.report_info("No suggestions yet.")
+                tui.report_info(_format_learning_suggestions(suggestions))
                 return
 
             if stripped == "/learnings":
-                session_files: list[Path] = []
-                if learnings_dir.exists() and learnings_dir.is_dir():
-                    session_files = sorted(
-                        (path for path in learnings_dir.glob("*.md") if path.is_file()),
-                        key=lambda path: path.stat().st_mtime,
-                        reverse=True,
-                    )
-
-                recent_errors: list[str] = []
-                for session_file in session_files:
-                    in_errors_section = False
-                    for line in session_file.read_text(encoding="utf-8").splitlines():
-                        stripped_line = line.strip()
-                        if not in_errors_section:
-                            if stripped_line.lower() == "## errors":
-                                in_errors_section = True
-                            continue
-                        if stripped_line.startswith("## "):
-                            break
-                        if stripped_line:
-                            recent_errors.append(stripped_line)
-                        if len(recent_errors) >= 3:
-                            break
-                    if len(recent_errors) >= 3:
-                        break
-
-                report = [f"Learnings sessions: {len(session_files)}"]
-                if recent_errors:
-                    report.append("Recent errors:\n- " + "\n- ".join(recent_errors[:3]))
-                else:
-                    report.append("Recent errors: none")
-                tui.report_info("\n".join(report))
+                tui.report_info(_build_learnings_report(learnings_dir))
                 return
 
             tui.report_error("Usage: /learnings [clear|suggest]")
