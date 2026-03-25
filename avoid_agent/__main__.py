@@ -935,7 +935,13 @@ def _run_headless(args) -> None:
 
     # Single-turn mode
     if args.prompt is not None:
+        from avoid_agent.learnings import capture_session
+
         result = run_one_turn(args.prompt, 1)
+        failed_tool_calls = [tool_call for tool_call in result["tool_calls"] if tool_call.get("is_error") is True]
+        errors = [result["error"]] if isinstance(result["error"], str) and result["error"].strip() else []
+        session_id = session_name
+        capture_session(session_id, failed_tool_calls, errors)
         sys.stdout.write(json.dumps(result, indent=2) + "\n")
         sys.stdout.flush()
         sys.exit(0 if result["success"] else 1)
