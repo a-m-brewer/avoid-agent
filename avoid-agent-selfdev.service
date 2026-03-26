@@ -1,0 +1,36 @@
+# avoid-agent-selfdev.service — systemd unit file template for the avoid-agent self-improvement loop.
+#
+# INSTALLATION
+# ============
+# Before installing, you MUST set the following fields to match your system:
+#   1. WorkingDirectory= — absolute path to your avoid-agent repository clone
+#   2. User=             — the system user that should run the service
+#   3. EnvironmentFile=  — absolute path to your .env file (must contain ANTHROPIC_API_KEY etc.)
+#
+# Install and start the service:
+#   sudo cp avoid-agent-selfdev.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now avoid-agent-selfdev
+#
+# View logs:
+#   journalctl -u avoid-agent-selfdev -f
+#
+# Required .env variables: ANTHROPIC_API_KEY, DEFAULT_MODEL (optional)
+
+[Unit]
+Description=avoid-agent self-improvement loop
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME_HERE
+WorkingDirectory=/path/to/avoid-agent
+ExecStart=/path/to/avoid-agent/supervisor.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+EnvironmentFile=/path/to/avoid-agent/.env
+
+[Install]
+WantedBy=multi-user.target
