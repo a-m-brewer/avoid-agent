@@ -499,7 +499,7 @@ def get_provider(
     provider_name = model_parts[0].lower()
     model_name = "/".join(model_parts[1:])
 
-    if provider_name == "openai" or provider_name == "openrouter":
+    if provider_name == "openai" or provider_name == "openrouter" or provider_name == "zai":
         # pylint: disable=import-outside-toplevel
         from avoid_agent.providers.openai import OpenAIProvider
 
@@ -511,6 +511,10 @@ def get_provider(
 
         if provider_name == "openai":
             api_key = os.getenv("OPENAI_API_KEY")
+
+        if provider_name == "zai":
+            base_url = os.getenv("ZAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4").rstrip('/')
+            api_key = os.getenv("ZAI_API_KEY")
 
         if api_key is None:
             raise ValueError(
