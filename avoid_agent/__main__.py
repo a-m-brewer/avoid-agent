@@ -58,6 +58,24 @@ def _count_backlog_totals(repo_root: Path) -> tuple[int, int]:
     return (completed, total)
 
 
+def _count_backlog_status(repo_root: Path) -> tuple[int, int, int]:
+    """Return (completed, pending, failed) counts from backlog.md."""
+    backlog_path = repo_root / "backlog.md"
+    if not backlog_path.exists():
+        return (0, 0, 0)
+    completed = pending = failed = 0
+    with open(backlog_path, "r", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if re.match(r"^- \[x\]", stripped):
+                completed += 1
+            elif re.match(r"^- \[ \]", stripped):
+                pending += 1
+            elif re.match(r"^- \[!\]", stripped):
+                failed += 1
+    return (completed, pending, failed)
+
+
 def _stream_selfdev_headless_stderr(pipe, tui: TUI, tool_count_ref: list[int]) -> None:
     """Map headless stderr JSON events into rich TUI updates."""
     text_buffer = ""
@@ -1462,6 +1480,20 @@ def _run_selfdev(args) -> None:
             model=model,
             max_turns=args.max_turns,
         )
+
+    # Write status JSON for external monitoring
+    completed_count, pending_count, failed_count = _count_backlog_status(repo_root)
+    status_path = repo_root / "selfdev-status.json"
+    with open(status_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "last_run": datetime.now().isoformat(),
+            "exit_code": exit_code,
+            "completed_count": completed_count,
+            "pending_count": pending_count,
+            "failed_count": failed_count,
+        }, f, indent=2)
+        f.write("\n")
+
     sys.exit(exit_code)
 
 
