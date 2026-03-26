@@ -162,7 +162,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
 
 ## Phase 4: Autonomous improvements
 
-- [ ] Add `/self-improve` slash command to TUI mode
+- [ ] Add `/self-improve` slash command to TUI mode <!-- size:M -->
   **Goal:** Let the user trigger one self-improvement cycle interactively from within the TUI,
   see which task was picked, and be informed of the outcome without an auto-restart.
 
@@ -188,7 +188,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
   python -c "from avoid_agent.__main__ import main; print('OK')"
   ```
 
-- [ ] Add size labels to all unchecked backlog items
+- [ ] Add size labels to all unchecked backlog items <!-- size:S -->
   **Goal:** Annotate each unchecked `backlog.md` item with a rough size estimate so future
   Claude Code reviews can triage quickly. This is a `backlog.md`-only change — no code needed.
 
@@ -206,7 +206,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
   **Verify:** Every unchecked item's first line ends with a `<!-- size:_ -->` comment.
   No `[ ]` lines should be missing the label after this change.
 
-- [ ] Print learnings suggestions at selfdev startup
+- [ ] Print learnings suggestions at selfdev startup <!-- size:S -->
   **Goal:** Before the selfdev loop picks a task, log any analyzer suggestions so the operator
   can see recurring patterns in the terminal output without having to open the TUI.
 
@@ -231,7 +231,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
 
 ## Phase 5: Remote and long-running operation
 
-- [ ] Write `selfdev-status.json` after each selfdev cycle
+- [ ] Write `selfdev-status.json` after each selfdev cycle <!-- size:M -->
   **Goal:** Enable external monitoring by writing a machine-readable status file after each run.
 
   **Files to read first:**
@@ -254,7 +254,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
 
   **Verify:** Run `python -m avoid_agent selfdev --single` and confirm `selfdev-status.json` is written.
 
-- [ ] Add webhook notification support on selfdev cycle completion
+- [ ] Add webhook notification support on selfdev cycle completion <!-- size:M -->
   **Goal:** Optionally POST a JSON payload to an external URL (Slack, custom endpoint, etc.)
   when the selfdev loop finishes a cycle, without adding any new pip dependencies.
 
@@ -275,7 +275,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
   **Verify:** `python -m avoid_agent selfdev --help` works. No new entries in `requirements.txt`
   or `pyproject.toml` dependencies.
 
-- [ ] Create a systemd unit file template for long-running selfdev
+- [ ] Create a systemd unit file template for long-running selfdev <!-- size:S -->
   **Goal:** Make it easy for users to run the selfdev loop as a background service that
   restarts automatically via `supervisor.sh`.
 
@@ -316,7 +316,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
 Inspired by [HumanLayer/CodeLayer](https://github.com/humanlayer/humanlayer) research:
 12 Factor Agents, Advanced Context Engineering, Context-Efficient Backpressure, and Harness Engineering.
 
-- [ ] Implement context-efficient backpressure for bash output
+- [ ] Implement context-efficient backpressure for bash output <!-- size:M -->
   **Goal:** Suppress verbose passing output from `run_bash` so successful commands consume minimal
   context tokens, preserving the context window for useful information. Based on HumanLayer's
   `run_silent()` pattern: "every line of `PASS` is waste."
@@ -347,7 +347,7 @@ Inspired by [HumanLayer/CodeLayer](https://github.com/humanlayer/humanlayer) res
   "
   ```
 
-- [ ] Add proactive compaction checkpoints
+- [ ] Add proactive compaction checkpoints <!-- size:M -->
   **Goal:** Trigger context compaction at ~50% token utilization rather than waiting until the
   budget is exceeded. HumanLayer targets 40-60% utilization with "intentional compaction" to keep
   context fresh and high-relevance throughout long sessions.
@@ -379,7 +379,7 @@ Inspired by [HumanLayer/CodeLayer](https://github.com/humanlayer/humanlayer) res
   "
   ```
 
-- [ ] Add consecutive error spin-out protection
+- [ ] Add consecutive error spin-out protection <!-- size:M -->
   **Goal:** Detect when the agent is stuck in an error loop (e.g., repeatedly hitting the same
   `OSError` or permission issue) and inject a coaching message after 3 consecutive tool errors,
   telling it to try a different approach or declare a blocker.
@@ -409,7 +409,7 @@ Inspired by [HumanLayer/CodeLayer](https://github.com/humanlayer/humanlayer) res
   python -c "from avoid_agent.agent.runtime import _MAX_CONSECUTIVE_TOOL_ERRORS; print('OK:', _MAX_CONSECUTIVE_TOOL_ERRORS)"
   ```
 
-- [ ] Implement progressive disclosure for AGENTS.md
+- [ ] Implement progressive disclosure for AGENTS.md <!-- size:M -->
   **Goal:** Shrink the always-loaded `AGENTS.md` to ~30 lines of universally relevant content
   (identity, run command, design philosophy). Move verbose sections (supervision workflow, event
   monitoring, fixes table) into `agent_docs/` reference files that the agent can `read_file`
@@ -435,7 +435,7 @@ Inspired by [HumanLayer/CodeLayer](https://github.com/humanlayer/humanlayer) res
   **Verify:** `wc -l AGENTS.md` should be ~30 lines. The moved files should exist and contain
   the original content.
 
-- [ ] Add conditional instruction blocks to system prompt
+- [ ] Add conditional instruction blocks to system prompt <!-- size:M -->
   **Goal:** Wrap context-dependent system prompt sections in `<important if="...">` XML tags
   so the model applies them only when relevant. HumanLayer found this significantly improves
   instruction adherence in long CLAUDE.md files.
@@ -469,7 +469,7 @@ Inspired by [HumanLayer/CodeLayer](https://github.com/humanlayer/humanlayer) res
   "
   ```
 
-- [ ] Add sub-agent context firewall for research
+- [ ] Add sub-agent context firewall for research <!-- size:M -->
   **Goal:** Add a `research_query` tool that spawns a fresh headless agent instance to answer
   a question, returning only the final answer to the parent context. Intermediate tool calls
   and file reads stay in the sub-agent's context window, never polluting the parent's. This is
@@ -513,7 +513,7 @@ Inspired by [HumanLayer/CodeLayer](https://github.com/humanlayer/humanlayer) res
   "
   ```
 
-- [ ] Formalize stateless reducer pattern for agent turns
+- [ ] Formalize stateless reducer pattern for agent turns <!-- size:L -->
   **Goal:** Extract the core agent loop into a pure function `reduce_turn(messages, input, config) -> messages`
   that takes immutable input and returns new messages without side effects. This enables
   deterministic replay, fork-at-any-point debugging, and simpler testing. Based on 12 Factor
@@ -546,7 +546,7 @@ Inspired by [HumanLayer/CodeLayer](https://github.com/humanlayer/humanlayer) res
   "
   ```
 
-- [ ] Add `request_human_input` tool (human-as-tool pattern)
+- [ ] Add `request_human_input` tool (human-as-tool pattern) <!-- size:M -->
   **Goal:** Define a structured tool the agent can call to explicitly request human input,
   specifying the question, urgency, and expected response format. Based on 12 Factor Agents
   Factor 7: "Contact humans with tool calls." Replaces implicit human interaction with an
