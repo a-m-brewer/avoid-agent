@@ -254,7 +254,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
 
   **Verify:** Run `python -m avoid_agent selfdev --single` and confirm `selfdev-status.json` is written.
 
-- [ ] Add webhook notification support on selfdev cycle completion <!-- size:M -->
+- [x] Add webhook notification support on selfdev cycle completion <!-- size:M -->
   **Goal:** Optionally POST a JSON payload to an external URL (Slack, custom endpoint, etc.)
   when the selfdev loop finishes a cycle, without adding any new pip dependencies.
 
