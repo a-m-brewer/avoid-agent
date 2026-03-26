@@ -1,9 +1,9 @@
 """Tests for interactive selfdev wiring and TUI status extensions."""
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from avoid_agent.__main__ import _run_selfdev
+from avoid_agent.__main__ import _run_agent, _run_selfdev
 from avoid_agent.tui.components.status_bar import StatusBarComponent
 
 
@@ -90,3 +90,194 @@ def test_run_selfdev_uses_operator_when_flag_set() -> None:
     assert kwargs["model"] == "anthropic/claude"
     assert kwargs["max_turns"] == 40
     sys_exit.assert_called_once_with(42)
+
+
+def test_self_improve_no_items_reports_info(monkeypatch) -> None:
+    """When backlog is empty, report that and return without spawning a thread."""
+    submitted_tuis = []
+
+    class FakeTUI:
+        def __init__(self, **kwargs):
+            self.on_submit = kwargs.get("on_submit")
+            submitted_tuis.append(self)
+        def set_thinking_enabled(self, *a): pass
+        def set_effort(self, *a): pass
+        def set_warning(self, *a): pass
+        def push_item(self, *a): pass
+        def run(self):
+            self.on_submit("/self-improve")
+        def stop(self): pass
+        def set_model(self, *a): pass
+        def clear_conversation(self): pass
+        def ask_permission(self, cmd): return "allow"
+        def append_chunk(self, text): pass
+        def replace_last_assistant(self, text): pass
+        def update_tokens(self, tokens): pass
+        _info_calls = []
+        def report_info(self, msg): self._info_calls.append(msg)
+        _error_calls = []
+        def report_error(self, msg): self._error_calls.append(msg)
+
+    with patch("avoid_agent.__main__.TUI", FakeTUI), \
+         patch("avoid_agent.selfdev.loop.parse_backlog", return_value=[]), \
+         patch("avoid_agent.__main__.find_available_tools", return_value=[]), \
+         patch("avoid_agent.__main__.providers.get_provider", return_value=MagicMock()), \
+         patch("avoid_agent.__main__.build_system_prompt", return_value="sys"), \
+         patch("avoid_agent.__main__.gather_initial_context", return_value=(".", "", "")), \
+         patch("avoid_agent.__main__.get_saved_model", return_value="anthropic/test"), \
+         patch("avoid_agent.__main__.load_user_config", return_value={}), \
+         patch("avoid_agent.__main__.load_allowed", return_value=[]), \
+         patch("avoid_agent.__main__.load_session", return_value=None), \
+         patch("avoid_agent.__main__.load_dotenv"):
+        _run_agent()
+
+    assert len(submitted_tuis) == 1
+    tui = submitted_tuis[0]
+    assert any("No pending backlog items" in msg for msg in tui._info_calls)
+
+
+def test_self_improve_reports_next_task(monkeypatch) -> None:
+    """When there is a backlog item, report its text."""
+    class FakeItem:
+        def __init__(self, text):
+            self.text = text
+
+    submitted_tuis = []
+
+    class FakeTUI:
+        def __init__(self, **kwargs):
+            self.on_submit = kwargs.get("on_submit")
+            submitted_tuis.append(self)
+        def set_thinking_enabled(self, *a): pass
+        def set_effort(self, *a): pass
+        def set_warning(self, *a): pass
+        def push_item(self, *a): pass
+        def run(self):
+            self.on_submit("/self-improve")
+        def stop(self): pass
+        def set_model(self, *a): pass
+        def clear_conversation(self): pass
+        def ask_permission(self, cmd): return "allow"
+        def append_chunk(self, text): pass
+        def replace_last_assistant(self, text): pass
+        def update_tokens(self, tokens): pass
+        _info_calls = []
+        def report_info(self, msg): self._info_calls.append(msg)
+        _error_calls = []
+        def report_error(self, msg): self._error_calls.append(msg)
+
+    with patch("avoid_agent.__main__.TUI", FakeTUI), \
+         patch("avoid_agent.selfdev.loop.parse_backlog", return_value=[FakeItem("my important task")]), \
+         patch("avoid_agent.selfdev.loop.run_one_cycle", return_value="restart"), \
+         patch("avoid_agent.__main__.find_available_tools", return_value=[]), \
+         patch("avoid_agent.__main__.providers.get_provider", return_value=MagicMock()), \
+         patch("avoid_agent.__main__.build_system_prompt", return_value="sys"), \
+         patch("avoid_agent.__main__.gather_initial_context", return_value=(".", "", "")), \
+         patch("avoid_agent.__main__.get_saved_model", return_value="anthropic/test"), \
+         patch("avoid_agent.__main__.load_user_config", return_value={}), \
+         patch("avoid_agent.__main__.load_allowed", return_value=[]), \
+         patch("avoid_agent.__main__.load_session", return_value=None), \
+         patch("avoid_agent.__main__.load_dotenv"):
+        _run_agent()
+
+    assert len(submitted_tuis) == 1
+    tui = submitted_tuis[0]
+    assert any("Next task: my important task" in msg for msg in tui._info_calls)
+
+
+def test_self_improve_restart_reports_success(monkeypatch) -> None:
+    """When run_one_cycle returns restart, report success."""
+    class FakeItem:
+        def __init__(self, text):
+            self.text = text
+
+    submitted_tuis = []
+
+    class FakeTUI:
+        def __init__(self, **kwargs):
+            self.on_submit = kwargs.get("on_submit")
+            submitted_tuis.append(self)
+        def set_thinking_enabled(self, *a): pass
+        def set_effort(self, *a): pass
+        def set_warning(self, *a): pass
+        def push_item(self, *a): pass
+        def run(self):
+            self.on_submit("/self-improve")
+        def stop(self): pass
+        def set_model(self, *a): pass
+        def clear_conversation(self): pass
+        def ask_permission(self, cmd): return "allow"
+        def append_chunk(self, text): pass
+        def replace_last_assistant(self, text): pass
+        def update_tokens(self, tokens): pass
+        _info_calls = []
+        def report_info(self, msg): self._info_calls.append(msg)
+        _error_calls = []
+        def report_error(self, msg): self._error_calls.append(msg)
+
+    with patch("avoid_agent.__main__.TUI", FakeTUI), \
+         patch("avoid_agent.selfdev.loop.parse_backlog", return_value=[FakeItem("some task")]), \
+         patch("avoid_agent.selfdev.loop.run_one_cycle", return_value="restart"), \
+         patch("avoid_agent.__main__.find_available_tools", return_value=[]), \
+         patch("avoid_agent.__main__.providers.get_provider", return_value=MagicMock()), \
+         patch("avoid_agent.__main__.build_system_prompt", return_value="sys"), \
+         patch("avoid_agent.__main__.gather_initial_context", return_value=(".", "", "")), \
+         patch("avoid_agent.__main__.get_saved_model", return_value="anthropic/test"), \
+         patch("avoid_agent.__main__.load_user_config", return_value={}), \
+         patch("avoid_agent.__main__.load_allowed", return_value=[]), \
+         patch("avoid_agent.__main__.load_session", return_value=None), \
+         patch("avoid_agent.__main__.load_dotenv"):
+        _run_agent()
+
+    assert len(submitted_tuis) == 1
+    tui = submitted_tuis[0]
+    assert any("restart is recommended" in msg for msg in tui._info_calls)
+
+
+def test_self_improve_failed_reports_error(monkeypatch) -> None:
+    """When run_one_cycle returns failed, report that the cycle failed."""
+    class FakeItem:
+        def __init__(self, text):
+            self.text = text
+
+    submitted_tuis = []
+
+    class FakeTUI:
+        def __init__(self, **kwargs):
+            self.on_submit = kwargs.get("on_submit")
+            submitted_tuis.append(self)
+        def set_thinking_enabled(self, *a): pass
+        def set_effort(self, *a): pass
+        def set_warning(self, *a): pass
+        def push_item(self, *a): pass
+        def run(self):
+            self.on_submit("/self-improve")
+        def stop(self): pass
+        def set_model(self, *a): pass
+        def clear_conversation(self): pass
+        def ask_permission(self, cmd): return "allow"
+        def append_chunk(self, text): pass
+        def replace_last_assistant(self, text): pass
+        def update_tokens(self, tokens): pass
+        _info_calls = []
+        def report_info(self, msg): self._info_calls.append(msg)
+        _error_calls = []
+        def report_error(self, msg): self._error_calls.append(msg)
+
+    with patch("avoid_agent.__main__.TUI", FakeTUI), \
+         patch("avoid_agent.selfdev.loop.parse_backlog", return_value=[FakeItem("some task")]), \
+         patch("avoid_agent.selfdev.loop.run_one_cycle", return_value="failed"), \
+         patch("avoid_agent.__main__.find_available_tools", return_value=[]), \
+         patch("avoid_agent.__main__.providers.get_provider", return_value=MagicMock()), \
+         patch("avoid_agent.__main__.build_system_prompt", return_value="sys"), \
+         patch("avoid_agent.__main__.gather_initial_context", return_value=(".", "", "")), \
+         patch("avoid_agent.__main__.get_saved_model", return_value="anthropic/test"), \
+         patch("avoid_agent.__main__.load_user_config", return_value={}), \
+         patch("avoid_agent.__main__.load_allowed", return_value=[]), \
+         patch("avoid_agent.__main__.load_session", return_value=None), \
+         patch("avoid_agent.__main__.load_dotenv"):
+        _run_agent()
+
+    assert len(submitted_tuis) == 1
+    tui = submitted_tuis[0]
+    assert any("Cycle failed. Branch preserved for review" in msg for msg in tui._info_calls)
