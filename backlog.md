@@ -231,7 +231,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
 
 ## Phase 5: Remote and long-running operation
 
-- [ ] Write `selfdev-status.json` after each selfdev cycle <!-- size:M -->
+- [x] Write `selfdev-status.json` after each selfdev cycle <!-- size:M -->
   **Goal:** Enable external monitoring by writing a machine-readable status file after each run.
 
   **Files to read first:**
