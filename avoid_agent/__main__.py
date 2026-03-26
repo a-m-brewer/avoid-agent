@@ -76,6 +76,30 @@ def _count_backlog_status(repo_root: Path) -> tuple[int, int, int]:
     return (completed, pending, failed)
 
 
+def _notify(url: str, payload: dict) -> None:
+    """POST a JSON payload to url as a webhook notification.
+    
+    Configure via the SELFDEV_WEBHOOK_URL environment variable.
+    Example: SELFDEV_WEBHOOK_URL=https://hooks.slack.com/services/...
+    
+    Failures are logged to stderr but never raise (notification failures must not crash the process).
+    """
+    import urllib.request
+    import urllib.error
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            pass  # fire and forget
+    except Exception as e:  # pylint: disable=broad-except
+        print(f"[selfdev] webhook error: {e}", file=sys.stderr)
+
+
 def _stream_selfdev_headless_stderr(pipe, tui: TUI, tool_count_ref: list[int]) -> None:
     """Map headless stderr JSON events into rich TUI updates."""
     text_buffer = ""
@@ -1493,6 +1517,18 @@ def _run_selfdev(args) -> None:
             "failed_count": failed_count,
         }, f, indent=2)
         f.write("\n")
+
+    # Send webhook notification if configured
+    webhook_url = os.environ.get("SELFDEV_WEBHOOK_URL")
+    if webhook_url:
+        _notify(webhook_url, {
+            "event": "cycle_complete",
+            "exit_code": exit_code,
+            "timestamp": datetime.now().isoformat(),
+            "completed": completed_count,
+            "pending": pending_count,
+            "failed": failed_count,
+        })
 
     sys.exit(exit_code)
 
