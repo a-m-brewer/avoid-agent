@@ -961,6 +961,54 @@ def _run_agent() -> None:
             tui.report_error("Usage: /learnings [clear|suggest]")
             return
 
+        if text.strip().startswith("/self-improve"):
+            from avoid_agent.selfdev.loop import parse_backlog, run_one_cycle
+
+            repo_root = Path(__file__).resolve().parent.parent
+            items = parse_backlog(repo_root)
+
+            if not items:
+                tui.report_info("No pending backlog items")
+                return
+
+            tui.report_info(f"Next task: {items[0].text}")
+
+            worker_done = threading.Event()
+            worker_result: dict[str, str] = {"result": "error"}
+
+            def worker() -> None:
+                try:
+                    result = run_one_cycle(repo_root, model=active_model)
+                    worker_result["result"] = result
+                except Exception as e:  # pylint: disable=broad-except
+                    worker_result["result"] = "error"
+                    worker_result["error"] = str(e)
+                finally:
+                    worker_done.set()
+
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            tui.report_info("Running selfdev cycle...")
+
+            def poll_worker() -> None:
+                while not worker_done.wait(timeout=0.1):
+                    pass
+                result = worker_result["result"]
+                if result == "restart":
+                    tui.report_info("Changes merged and ready. A restart is recommended.")
+                elif result == "done":
+                    tui.report_info("All backlog items completed!")
+                elif result in ("failed", "error"):
+                    error_msg = worker_result.get("error", "Cycle failed. Branch preserved for review.")
+                    tui.report_info(f"Cycle failed. Branch preserved for review.")
+                    if error_msg and error_msg != "error":
+                        tui.report_error(error_msg)
+                else:
+                    tui.report_error(f"Unexpected result: {result}")
+
+            threading.Thread(target=poll_worker, daemon=True).start()
+            return
+
         messages_checkpoint = messages[:]
 
         try:
