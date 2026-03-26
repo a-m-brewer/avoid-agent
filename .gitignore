@@ -180,3 +180,4 @@ pyrightconfig.json
 data/
 .worktrees/
 .learnings/
+selfdev-status.json
