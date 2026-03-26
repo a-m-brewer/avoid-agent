@@ -1429,6 +1429,16 @@ def _run_selfdev(args) -> None:
     load_dotenv()
     repo_root = Path(__file__).resolve().parent.parent
     model = args.model or os.getenv("DEFAULT_MODEL")
+
+    # Print learnings suggestions before starting the loop
+    from avoid_agent.learnings_analyzer import analyze
+
+    learnings_dir = repo_root / ".learnings" / "sessions"
+    suggestions = analyze(learnings_dir)
+    if suggestions:
+        ts = time.strftime("%H:%M:%S")
+        for suggestion in suggestions:
+            print(f"[selfdev {ts}] [suggestion] {suggestion}", flush=True)
     if getattr(args, "operator", False):
         exit_code = _run_selfdev_operator(
             repo_root=repo_root,
