@@ -162,7 +162,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
 
 ## Phase 4: Autonomous improvements
 
-- [ ] Add `/self-improve` slash command to TUI mode <!-- size:M -->
+- [x] Add `/self-improve` slash command to TUI mode <!-- size:M -->
   **Goal:** Let the user trigger one self-improvement cycle interactively from within the TUI,
   see which task was picked, and be informed of the outcome without an auto-restart.
 
@@ -188,7 +188,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
   python -c "from avoid_agent.__main__ import main; print('OK')"
   ```
 
-- [ ] Add size labels to all unchecked backlog items <!-- size:S -->
+- [x] Add size labels to all unchecked backlog items <!-- size:S -->
   **Goal:** Annotate each unchecked `backlog.md` item with a rough size estimate so future
   Claude Code reviews can triage quickly. This is a `backlog.md`-only change — no code needed.
 
@@ -206,7 +206,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
   **Verify:** Every unchecked item's first line ends with a `<!-- size:_ -->` comment.
   No `[ ]` lines should be missing the label after this change.
 
-- [ ] Print learnings suggestions at selfdev startup <!-- size:S -->
+- [x] Print learnings suggestions at selfdev startup <!-- size:S -->
   **Goal:** Before the selfdev loop picks a task, log any analyzer suggestions so the operator
   can see recurring patterns in the terminal output without having to open the TUI.
 

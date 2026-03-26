@@ -213,8 +213,7 @@ def _run_selfdev_observe(repo_root: Path, model: str | None, max_turns: int) -> 
     branch_name = f"selfdev/{re.sub(r'[^a-z0-9]+', '-', task_text.lower())[:50].strip('-')}"
     worktree_path: Path | None = None
 
-    active_model = model or os.getenv("DEFAULT_MODEL", "anthropic/claude-sonnet-4-6")
-    tui = TUI(on_submit=lambda _text: None, model=active_model, auto_spinner_on_submit=False, read_only=True)
+    tui = TUI(on_submit=lambda _text: None, model=model, auto_spinner_on_submit=False, read_only=True)
     tui.set_phase("preparing")
     tui.set_progress(progress_current, total_count)
     source_label = f"refined sub-task: {task_text}" if is_refined else f"task: {task_text}"
@@ -400,8 +399,7 @@ def _run_selfdev_interactive(repo_root: Path, model: str | None, max_turns: int)
     worker_done = threading.Event()
     worker_result: dict[str, object] = {"result": "error", "error": "unexpected"}
 
-    active_model = model or os.getenv("DEFAULT_MODEL", "anthropic/claude-sonnet-4-6")
-    tui = TUI(on_submit=lambda _text: None, model=active_model, auto_spinner_on_submit=False)
+    tui = TUI(on_submit=lambda _text: None, model=model, auto_spinner_on_submit=False)
     tui.set_phase("preparing")
     tui.set_progress(progress_current, total_count)
     tui.push_item(StatusItem(text=f"task: {item.text}"))
@@ -1342,8 +1340,7 @@ def _run_selfdev_operator(repo_root: Path, model: str | None, max_turns: int) ->
     from avoid_agent.selfdev import RESTART_EXIT_CODE
     from avoid_agent.selfdev.operator import stream_operator_to_tui
 
-    active_model = model or os.getenv("DEFAULT_MODEL", "anthropic/claude-sonnet-4-6")
-    tui = TUI(on_submit=lambda _text: None, model=active_model, auto_spinner_on_submit=False, read_only=True)
+    tui = TUI(on_submit=lambda _text: None, model=model, auto_spinner_on_submit=False, read_only=True)
     tui.set_phase("operator starting")
     tui.push_item(StatusItem(text="Operator agent managing selfdev workflow..."))
 
@@ -1428,7 +1425,7 @@ def _run_selfdev(args) -> None:
 
     load_dotenv()
     repo_root = Path(__file__).resolve().parent.parent
-    model = args.model or os.getenv("DEFAULT_MODEL")
+    model = args.model or get_saved_model() or "anthropic/claude-sonnet-4-6"
 
     # Print learnings suggestions before starting the loop
     from avoid_agent.learnings_analyzer import analyze
