@@ -614,7 +614,7 @@ class AgentRuntime:
         save_allowed_prefixes: Callable[[set[str]], None] | None = None,
         on_event: Callable[[RuntimeEvent], None] | None = None,
         context_strategy: ContextStrategy = "compact+window",
-        token_budget: int = 100_000,
+        token_budget: int = 40_000,
         tool_choice: ToolChoice = "auto",
     ):
         self._provider = provider

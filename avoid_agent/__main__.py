@@ -652,17 +652,32 @@ def _run_selfdev_interactive(repo_root: Path, model: str | None, max_turns: int)
     return 0
 
 
+def _is_worktree_context(cwd: str) -> bool:
+    """Detect if running in a git worktree (for skipping redundant git operations)."""
+    return ".worktrees" in cwd or "/.worktrees/" in cwd
+
+
 def gather_initial_context() -> tuple[str, str, str]:
-    """Collect runtime context used by the system prompt and initial conversation."""
+    """Collect runtime context used by the system prompt and initial conversation.
+    
+    Skips git status in worktree contexts to save tokens and avoid noise.
+    """
     cwd = os.getcwd()
-    git_status = subprocess.run(
-        "git status --short", shell=True, capture_output=True, text=True, cwd=cwd
-    )
-    git_output = (
-        git_status.stdout.strip()
-        if git_status.returncode == 0
-        else "Not a git repository"
-    )
+    
+    # Skip git status in worktrees - the status is always "clean" or shows
+    # uncommitted changes from the agent, which is not useful context
+    if _is_worktree_context(cwd):
+        git_output = "(worktree - git status skipped for token savings)"
+    else:
+        git_status = subprocess.run(
+            "git status --short", shell=True, capture_output=True, text=True, cwd=cwd
+        )
+        git_output = (
+            git_status.stdout.strip()
+            if git_status.returncode == 0
+            else "Not a git repository"
+        )
+    
     top_level_structure = subprocess.run(
         "find . -maxdepth 2 ! -path './.venv/*' ! -path './.git' ! -path './.git/*' ! -path '*/__pycache__/*'",
         shell=True,

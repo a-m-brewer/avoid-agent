@@ -272,7 +272,14 @@ def _gather_recent_selfdev_commits(repo_root: Path, limit: int = 10) -> str:
 
 
 def _gather_learnings(repo_root: Path, limit: int = 5) -> str:
-    """Return the most recent learnings entries, if any."""
+    """Return the most recent learnings entries, if any.
+    
+    Controlled by SELFDEV_INCLUDE_LEARNINGS env var (default: false for token savings).
+    """
+    # Default to NOT including learnings to save tokens (~1500-2500 per worker run)
+    if not os.getenv("SELFDEV_INCLUDE_LEARNINGS", "").lower() in ("1", "true", "yes"):
+        return ""
+    
     learnings_dir = repo_root / ".learnings" / "sessions"
     if not learnings_dir.exists():
         return ""

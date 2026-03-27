@@ -11,6 +11,22 @@ import yaml
 _MAX_GIT_STATUS_CHARS = 4000
 _MAX_TREE_CHARS = 8000
 
+# Module-level cache for skill discovery (avoids repeated filesystem scans)
+_SKILL_CACHE: list[SkillSummary] | None = None
+_SKILL_CACHE_KEY: str = ""
+
+
+def _get_skill_cache_key(
+    working_directory: str | None,
+    skills_search_paths: list[str] | None,
+) -> str:
+    """Generate a cache key based on search paths."""
+    if skills_search_paths:
+        return ",".join(sorted(skills_search_paths))
+    if working_directory:
+        return ",".join(str(p) for p in _default_skill_search_paths(working_directory))
+    return ",".join(str(p) for p in _default_skill_search_paths(None))
+
 
 @dataclass
 class ContextFile:
@@ -142,7 +158,18 @@ def discover_skills(
     *,
     skills_search_paths: list[str] | None = None,
 ) -> list[SkillSummary]:
-    """Discover skills from local and user skill directories."""
+    """Discover skills from local and user skill directories.
+    
+    Results are cached per-process to avoid repeated filesystem scans.
+    """
+    global _SKILL_CACHE, _SKILL_CACHE_KEY  # pylint: disable=global-statement
+
+    cache_key = _get_skill_cache_key(working_directory, skills_search_paths)
+
+    # Return cached result if available
+    if _SKILL_CACHE is not None and _SKILL_CACHE_KEY == cache_key:
+        return _SKILL_CACHE
+
     roots = (
         [Path(path).expanduser() for path in skills_search_paths]
         if skills_search_paths is not None
@@ -174,6 +201,11 @@ def discover_skills(
             discovered.append(parsed)
 
     discovered.sort(key=lambda skill: skill.name.lower())
+
+    # Cache the result
+    _SKILL_CACHE = discovered
+    _SKILL_CACHE_KEY = cache_key
+
     return discovered
 
 
