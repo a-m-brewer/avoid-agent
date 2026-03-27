@@ -1,13 +1,17 @@
 """Tests for slash-prefixed exit commands in the TUI."""
 
 import pytest
+from unittest.mock import patch
 
-import avoid_agent.tui as tui_module
+from avoid_agent.tui import TUI
 from avoid_agent.tui.components.conversation import UserItem
 
 
 class _FakeTerminal:
     columns = 120
+
+    def __init__(self) -> None:
+        pass
 
     def start(self) -> None:
         return None
@@ -43,14 +47,15 @@ class _FakeRenderer:
 
 
 @pytest.mark.parametrize("text", ["exit", "quit"])
-def test_plain_exit_words_are_submitted_as_messages(monkeypatch, text: str) -> None:
-    monkeypatch.setattr(tui_module, "Terminal", _FakeTerminal)
-    monkeypatch.setattr(tui_module, "Renderer", _FakeRenderer)
-
+def test_plain_exit_words_are_submitted_as_messages(text: str) -> None:
     submitted: list[str] = []
-    tui = tui_module.TUI(on_submit=submitted.append, model="test")
-    monkeypatch.setattr(tui, "_start_spinner", lambda: None)
-    monkeypatch.setattr(tui, "_stop_spinner", lambda: None)
+
+    with patch("avoid_agent.tui.Terminal", return_value=_FakeTerminal()), \
+         patch("avoid_agent.tui.Renderer", _FakeRenderer):
+        tui = TUI(on_submit=submitted.append, model="test")
+
+    tui._start_spinner = lambda: None
+    tui._stop_spinner = lambda: None
 
     tui._input.line.text = text
     tui._input.line.cursor = len(text)
@@ -64,12 +69,12 @@ def test_plain_exit_words_are_submitted_as_messages(monkeypatch, text: str) -> N
 
 
 @pytest.mark.parametrize("text", ["/exit", "/quit"])
-def test_slash_exit_commands_terminate_without_submitting(monkeypatch, text: str) -> None:
-    monkeypatch.setattr(tui_module, "Terminal", _FakeTerminal)
-    monkeypatch.setattr(tui_module, "Renderer", _FakeRenderer)
-
+def test_slash_exit_commands_terminate_without_submitting(text: str) -> None:
     submitted: list[str] = []
-    tui = tui_module.TUI(on_submit=submitted.append, model="test")
+
+    with patch("avoid_agent.tui.Terminal", return_value=_FakeTerminal()), \
+         patch("avoid_agent.tui.Renderer", _FakeRenderer):
+        tui = TUI(on_submit=submitted.append, model="test")
 
     tui._input.line.text = text
     tui._input.line.cursor = len(text)

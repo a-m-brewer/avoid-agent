@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import avoid_agent.agent.tools.core  # noqa: F401  # registers built-in tools
 
-from avoid_agent.__main__ import _run_headless
+from avoid_agent.cli.headless import run as _run_headless
 from avoid_agent.agent.tools.finder import find_available_tools
 from avoid_agent.providers import (
     AssistantMessage,
@@ -106,10 +106,10 @@ def test_headless_single_turn_blocker(tmp_path: Path, capsys, monkeypatch):
     monkeypatch.setenv("DEFAULT_MODEL", "anthropic/claude-sonnet-4-6")
     monkeypatch.chdir(tmp_path)
 
-    with patch("avoid_agent.__main__.providers.get_provider", return_value=fake_provider), \
-         patch("avoid_agent.__main__.load_allowed", return_value=set()), \
-         patch("avoid_agent.__main__.gather_initial_context", return_value=(str(tmp_path), "", "")), \
-         patch("avoid_agent.__main__.build_system_prompt", return_value="test system prompt"):
+    with patch("avoid_agent.cli.headless.providers.get_provider", return_value=fake_provider), \
+         patch("avoid_agent.cli.headless.load_allowed", return_value=set()), \
+         patch("avoid_agent.cli.shared.gather_initial_context", return_value=(str(tmp_path), "", "")), \
+         patch("avoid_agent.cli.headless.build_system_prompt", return_value="test system prompt"):
         try:
             _run_headless(_FakeArgs(prompt="hello"))
         except SystemExit as e:
@@ -142,10 +142,10 @@ def test_headless_single_turn_tool_call(tmp_path: Path, capsys, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
 
-    with patch("avoid_agent.__main__.providers.get_provider", return_value=fake_provider), \
-         patch("avoid_agent.__main__.load_allowed", return_value=set()), \
-         patch("avoid_agent.__main__.gather_initial_context", return_value=(str(tmp_path), "", "")), \
-         patch("avoid_agent.__main__.build_system_prompt", return_value="test system prompt"):
+    with patch("avoid_agent.cli.headless.providers.get_provider", return_value=fake_provider), \
+         patch("avoid_agent.cli.headless.load_allowed", return_value=set()), \
+         patch("avoid_agent.cli.shared.gather_initial_context", return_value=(str(tmp_path), "", "")), \
+         patch("avoid_agent.cli.headless.build_system_prompt", return_value="test system prompt"):
         try:
             _run_headless(_FakeArgs(prompt="write a file"))
         except SystemExit as e:
@@ -179,10 +179,10 @@ def test_headless_auto_approve_bash(tmp_path: Path, capsys, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
 
-    with patch("avoid_agent.__main__.providers.get_provider", return_value=fake_provider), \
-         patch("avoid_agent.__main__.load_allowed", return_value=set()), \
-         patch("avoid_agent.__main__.gather_initial_context", return_value=(str(tmp_path), "", "")), \
-         patch("avoid_agent.__main__.build_system_prompt", return_value="test system prompt"):
+    with patch("avoid_agent.cli.headless.providers.get_provider", return_value=fake_provider), \
+         patch("avoid_agent.cli.headless.load_allowed", return_value=set()), \
+         patch("avoid_agent.cli.shared.gather_initial_context", return_value=(str(tmp_path), "", "")), \
+         patch("avoid_agent.cli.headless.build_system_prompt", return_value="test system prompt"):
         try:
             _run_headless(_FakeArgs(prompt="run echo", auto_approve=True))
         except SystemExit as e:
@@ -213,10 +213,10 @@ def test_headless_no_auto_approve_denies_bash(tmp_path: Path, capsys, monkeypatc
 
     monkeypatch.chdir(tmp_path)
 
-    with patch("avoid_agent.__main__.providers.get_provider", return_value=fake_provider), \
-         patch("avoid_agent.__main__.load_allowed", return_value=set()), \
-         patch("avoid_agent.__main__.gather_initial_context", return_value=(str(tmp_path), "", "")), \
-         patch("avoid_agent.__main__.build_system_prompt", return_value="test system prompt"):
+    with patch("avoid_agent.cli.headless.providers.get_provider", return_value=fake_provider), \
+         patch("avoid_agent.cli.headless.load_allowed", return_value=set()), \
+         patch("avoid_agent.cli.shared.gather_initial_context", return_value=(str(tmp_path), "", "")), \
+         patch("avoid_agent.cli.headless.build_system_prompt", return_value="test system prompt"):
         try:
             _run_headless(_FakeArgs(prompt="delete everything", auto_approve=False))
         except SystemExit as e:
@@ -245,11 +245,11 @@ def test_headless_multi_turn_stdin(tmp_path: Path, capsys, monkeypatch):
     fake_stdin = io.StringIO(stdin_data)
     fake_stdin.isatty = lambda: False
 
-    with patch("avoid_agent.__main__.providers.get_provider", return_value=fake_provider), \
-         patch("avoid_agent.__main__.load_allowed", return_value=set()), \
-         patch("avoid_agent.__main__.gather_initial_context", return_value=(str(tmp_path), "", "")), \
-         patch("avoid_agent.__main__.build_system_prompt", return_value="test system prompt"), \
-         patch("avoid_agent.__main__.sys") as mock_sys:
+    with patch("avoid_agent.cli.headless.providers.get_provider", return_value=fake_provider), \
+         patch("avoid_agent.cli.headless.load_allowed", return_value=set()), \
+         patch("avoid_agent.cli.shared.gather_initial_context", return_value=(str(tmp_path), "", "")), \
+         patch("avoid_agent.cli.headless.build_system_prompt", return_value="test system prompt"), \
+         patch("avoid_agent.cli.headless.sys") as mock_sys:
         mock_sys.stdin = fake_stdin
         mock_sys.stdin.isatty = fake_stdin.isatty
 
@@ -290,11 +290,11 @@ def test_headless_max_turns_exceeded(tmp_path: Path, capsys, monkeypatch):
     fake_stdin = io.StringIO(stdin_data)
     fake_stdin.isatty = lambda: False
 
-    with patch("avoid_agent.__main__.providers.get_provider", return_value=fake_provider), \
-         patch("avoid_agent.__main__.load_allowed", return_value=set()), \
-         patch("avoid_agent.__main__.gather_initial_context", return_value=(str(tmp_path), "", "")), \
-         patch("avoid_agent.__main__.build_system_prompt", return_value="test system prompt"), \
-         patch("avoid_agent.__main__.sys") as mock_sys:
+    with patch("avoid_agent.cli.headless.providers.get_provider", return_value=fake_provider), \
+         patch("avoid_agent.cli.headless.load_allowed", return_value=set()), \
+         patch("avoid_agent.cli.shared.gather_initial_context", return_value=(str(tmp_path), "", "")), \
+         patch("avoid_agent.cli.headless.build_system_prompt", return_value="test system prompt"), \
+         patch("avoid_agent.cli.headless.sys") as mock_sys:
         mock_sys.stdin = fake_stdin
         mock_sys.stdin.isatty = fake_stdin.isatty
 

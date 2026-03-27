@@ -1,6 +1,8 @@
 """Tests for searchable model picker behavior."""
 
-import avoid_agent.tui as tui_module
+from unittest.mock import patch, MagicMock
+
+from avoid_agent.tui import TUI
 from avoid_agent.providers import list_available_models
 
 
@@ -53,32 +55,26 @@ def test_list_available_models_includes_provider_prefix() -> None:
     assert all("/" in m for m in models), "All models should have provider/model format"
 
 
-def test_picker_can_filter_and_select(monkeypatch) -> None:
+def test_picker_can_filter_and_select() -> None:
+    """Test that the model picker can filter and select a model."""
     keys = [b"g", b"p", b"t", b"\r"]
-
-    def make_terminal():
-        return _FakeTerminal(keys=keys)
-
-    monkeypatch.setattr(tui_module, "Terminal", make_terminal)
-    monkeypatch.setattr(tui_module, "Renderer", _FakeRenderer)
-
-    tui = tui_module.TUI(on_submit=lambda _text: None, model="anthropic/old")
-    selected = tui.pick_from_list("Select model", ["anthropic/claude", "openai/gpt-5"])
+    
+    with patch("avoid_agent.tui.Terminal", return_value=_FakeTerminal(keys=keys)), \
+         patch("avoid_agent.tui.Renderer", _FakeRenderer):
+        tui = TUI(on_submit=lambda _text: None, model="anthropic/old")
+        selected = tui.pick_from_list("Select model", ["anthropic/claude", "openai/gpt-5"])
 
     assert selected == "openai/gpt-5"
 
 
-def test_picker_does_not_append_to_conversation_on_navigation(monkeypatch) -> None:
+def test_picker_does_not_append_to_conversation_on_navigation() -> None:
+    """Test that picker doesn't add items to conversation during navigation."""
     keys = [b"\x1b[B", b"\x1b[A", b"\r"]
-
-    def make_terminal():
-        return _FakeTerminal(keys=keys)
-
-    monkeypatch.setattr(tui_module, "Terminal", make_terminal)
-    monkeypatch.setattr(tui_module, "Renderer", _FakeRenderer)
-
-    tui = tui_module.TUI(on_submit=lambda _text: None, model="anthropic/old")
-    selected = tui.pick_from_list("Select model", ["anthropic/claude", "openai/gpt-5"])
+    
+    with patch("avoid_agent.tui.Terminal", return_value=_FakeTerminal(keys=keys)), \
+         patch("avoid_agent.tui.Renderer", _FakeRenderer):
+        tui = TUI(on_submit=lambda _text: None, model="anthropic/old")
+        selected = tui.pick_from_list("Select model", ["anthropic/claude", "openai/gpt-5"])
 
     assert selected == "anthropic/claude"
     assert tui._conversation.items == []

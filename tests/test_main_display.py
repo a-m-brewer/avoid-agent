@@ -2,7 +2,7 @@
 
 import json
 
-from avoid_agent.__main__ import (
+from avoid_agent.cli.tui import (
     _display_text_for_assistant_message,
     _extract_recent_learning_errors,
     _format_learning_suggestions,

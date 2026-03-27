@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
 import json
+import os
 from pathlib import Path
 import time
 from typing import Iterator, Literal, TypeAlias
@@ -158,7 +159,7 @@ def _fallback_models() -> list[str]:
 def _list_dynamic_models() -> list[str]:
     providers_to_models: dict[str, list[str]] = {}
 
-    anthropic_key = config.get_env("ANTHROPIC_API_KEY")
+    anthropic_key = config.getenv("ANTHROPIC_API_KEY")
     if anthropic_key:
         from avoid_agent.providers.anthropic import list_models as list_anthropic_models
 
@@ -169,7 +170,7 @@ def _list_dynamic_models() -> list[str]:
         except Exception:  # pylint: disable=broad-except
             pass
 
-    openai_key = config.get_env("OPENAI_API_KEY")
+    openai_key = config.getenv("OPENAI_API_KEY")
     if openai_key:
         from avoid_agent.providers.openai import list_models as list_openai_models
 
@@ -180,7 +181,7 @@ def _list_dynamic_models() -> list[str]:
         except Exception:  # pylint: disable=broad-except
             pass
 
-    openrouter_key = config.get_env("OPENROUTER_API_KEY")
+    openrouter_key = config.getenv("OPENROUTER_API_KEY")
     if openrouter_key:
         from avoid_agent.providers.openai import list_models as list_openai_models
 
@@ -194,7 +195,7 @@ def _list_dynamic_models() -> list[str]:
         except Exception:  # pylint: disable=broad-except
             pass
 
-    ollama_host = config.get_env("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    ollama_host = config.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     try:
         with urllib.request.urlopen(f"{ollama_host}/api/tags", timeout=2) as response:
             payload = json.loads(response.read().decode("utf-8"))

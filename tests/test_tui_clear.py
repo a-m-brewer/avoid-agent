@@ -1,11 +1,16 @@
 """Tests for clearing TUI conversation state."""
 
-from avoid_agent.__main__ import _clear_learning_session_files
-import avoid_agent.tui as tui_module
+from unittest.mock import patch
+
+from avoid_agent.cli.tui import _clear_learning_session_files
+from avoid_agent.tui import TUI
 
 
 class _FakeTerminal:
     columns = 120
+
+    def __init__(self) -> None:
+        pass
 
     def start(self) -> None:
         return None
@@ -40,11 +45,10 @@ class _FakeRenderer:
         return len(lines)
 
 
-def test_clear_conversation_resets_tokens_and_messages(monkeypatch) -> None:
-    monkeypatch.setattr(tui_module, "Terminal", _FakeTerminal)
-    monkeypatch.setattr(tui_module, "Renderer", _FakeRenderer)
-
-    tui = tui_module.TUI(on_submit=lambda _text: None, model="test")
+def test_clear_conversation_resets_tokens_and_messages() -> None:
+    with patch("avoid_agent.tui.Terminal", return_value=_FakeTerminal()), \
+         patch("avoid_agent.tui.Renderer", _FakeRenderer):
+        tui = TUI(on_submit=lambda _text: None, model="test")
 
     tui.update_tokens(123)
     tui._status.messages = 4
@@ -55,25 +59,23 @@ def test_clear_conversation_resets_tokens_and_messages(monkeypatch) -> None:
     assert tui._status.messages == 0
 
 
-def test_reset_spinner_message_restores_thinking_label(monkeypatch) -> None:
-    monkeypatch.setattr(tui_module, "Terminal", _FakeTerminal)
-    monkeypatch.setattr(tui_module, "Renderer", _FakeRenderer)
+def test_reset_spinner_message_restores_thinking_label() -> None:
+    with patch("avoid_agent.tui.Terminal", return_value=_FakeTerminal()), \
+         patch("avoid_agent.tui.Renderer", _FakeRenderer):
+        tui = TUI(on_submit=lambda _text: None, model="test")
 
-    tui = tui_module.TUI(on_submit=lambda _text: None, model="test")
     tui.set_spinner_message("running tool: run_bash")
-
     tui.reset_spinner_message()
 
     assert tui._spinner.message == "thinking..."
 
 
-def test_replace_last_assistant_updates_existing_item(monkeypatch) -> None:
-    monkeypatch.setattr(tui_module, "Terminal", _FakeTerminal)
-    monkeypatch.setattr(tui_module, "Renderer", _FakeRenderer)
+def test_replace_last_assistant_updates_existing_item() -> None:
+    with patch("avoid_agent.tui.Terminal", return_value=_FakeTerminal()), \
+         patch("avoid_agent.tui.Renderer", _FakeRenderer):
+        tui = TUI(on_submit=lambda _text: None, model="test")
 
-    tui = tui_module.TUI(on_submit=lambda _text: None, model="test")
     tui.report_info("raw json")
-
     tui.replace_last_assistant("formatted message")
 
     assert tui._conversation.items[-1].text == "formatted message"

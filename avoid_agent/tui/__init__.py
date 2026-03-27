@@ -5,7 +5,7 @@ import sys
 import threading
 import time
 
-from avoid_agent.infra import config
+from avoid_agent.infra.config import env_flag, AVOID_AGENT_DEBUG_KEYS_PATH
 from avoid_agent.tui.components.conversation import AssistantItem, ConversationComponent, PermissionItem, ToolCallItem, UserItem
 from avoid_agent.tui.components.input_component import InputComponent
 from avoid_agent.tui.components.spinner import SpinnerComponent
@@ -13,6 +13,10 @@ from avoid_agent.tui.components.status_bar import StatusBarComponent
 from avoid_agent.tui.history import History
 from avoid_agent.tui.keys import parse_key
 from avoid_agent.tui.renderer import Renderer
+from avoid_agent.tui.terminal import Terminal
+
+# Slash commands that exit the app.
+_EXIT_COMMANDS = frozenset({"/exit", "/quit"})
 
 
 class TUI:
@@ -43,8 +47,18 @@ class TUI:
         self._running = False
         self._auto_spinner_on_submit = auto_spinner_on_submit
 
-        self._debug_keys = config.env_flag("AVOID_AGENT_DEBUG_KEYS")
-        self._debug_keys_path = config.get_env("AVOID_AGENT_DEBUG_KEYS_PATH", "/tmp/avoid-agent-keys.log")
+        # Background submit thread and mid-flight slash-command support.
+        self._submit_thread: threading.Thread | None = None
+        # cancel_token is created fresh for each submit; the background thread
+        # receives it and passes it down to the AgentRuntime so it can exit
+        # cleanly between steps.
+        self.cancel_token: threading.Event | None = None
+        # Slash command typed while a submit is in-flight is stored here so it
+        # can be executed once the background thread has finished.
+        self._pending_slash: str | None = None
+
+        self._debug_keys = env_flag("AVOID_AGENT_DEBUG_KEYS")
+        self._debug_keys_path = AVOID_AGENT_DEBUG_KEYS_PATH
 
     def _log_key_debug(self, data: bytes, key: str) -> None:
         if not self._debug_keys:
@@ -89,6 +103,11 @@ class TUI:
                         break
         finally:
             self._running = False
+            # Wait for any in-flight submit thread before tearing down.
+            if self._submit_thread is not None and self._submit_thread.is_alive():
+                if self.cancel_token is not None:
+                    self.cancel_token.set()
+                self._submit_thread.join()
             sys.stdout.write("\n")
             sys.stdout.flush()
             self._terminal.stop()
@@ -244,9 +263,20 @@ class TUI:
             self._terminal.write(f"\x1b[{col_in_row}C")
         self._terminal.show_cursor()
 
+    def _is_submit_busy(self) -> bool:
+        """Return True if a background submit thread is currently running."""
+        return self._submit_thread is not None and self._submit_thread.is_alive()
+
     def _handle_key(self, key: str, data: bytes) -> bool:
         """Returns True if the loop should exit."""
         if key == "ctrl+c" or key == "ctrl+d":
+            if self._is_submit_busy():
+                # Cancel the in-flight turn and wait for the thread to stop
+                # before exiting, so the app shuts down cleanly.
+                if self.cancel_token is not None:
+                    self.cancel_token.set()
+                if self._submit_thread is not None:
+                    self._submit_thread.join()
             return True
         elif key == "paste_start":
             self._in_paste = True
@@ -259,20 +289,34 @@ class TUI:
                 text = self._input.line.clear()
                 if text.strip():
                     self._history.push(text)
-                    if text.strip() in ("/exit", "/quit"):
+                    stripped = text.strip()
+
+                    if self._is_submit_busy():
+                        # A turn is in-flight.  Only slash commands are accepted;
+                        # everything else is silently ignored so the user doesn't
+                        # accidentally queue up a second request.
+                        if stripped.startswith("/"):
+                            # Store the slash command and signal cancellation.
+                            self._pending_slash = stripped
+                            if self.cancel_token is not None:
+                                self.cancel_token.set()
+                            self.report_info(
+                                f"Cancelling current turn, then running: {stripped}"
+                            )
+                        self._safe_render()
+                        return False
+
+                    # Not busy — dispatch normally.
+                    if stripped in _EXIT_COMMANDS:
                         self._safe_render()
                         return True
+
                     self._conversation.items.append(UserItem(text=text))
                     self._safe_render()
-                    if self._auto_spinner_on_submit:
-                        self._start_spinner()
-                        self.on_submit(text)
-                        self._stop_spinner()
-                    else:
-                        self.on_submit(text)
+                    self._dispatch_submit(text)
+                    return False
         elif key == "shift+enter":
             self._input.line.insert("\n")
-
         elif key == "backspace":
             self._input.line.backspace()
         elif key == "delete":
@@ -305,6 +349,57 @@ class TUI:
 
         self._safe_render()
         return False
+
+    def _dispatch_submit(self, text: str) -> None:
+        """Run on_submit in a background thread so the key loop stays live.
+
+        When the thread finishes (normally or after cancellation) any pending
+        slash command is dispatched.
+        """
+        token = threading.Event()
+        self.cancel_token = token
+
+        def _run() -> None:
+            if self._auto_spinner_on_submit:
+                self._start_spinner()
+            try:
+                self.on_submit(text)
+            finally:
+                if self._auto_spinner_on_submit:
+                    self._stop_spinner()
+                # Dispatch any slash command that arrived mid-flight.
+                self._drain_pending_slash()
+
+        t = threading.Thread(target=_run, daemon=True)
+        self._submit_thread = t
+        t.start()
+
+    def _drain_pending_slash(self) -> None:
+        """Called from the background thread after it completes.
+
+        Executes the slash command that was stashed while the turn was in-flight.
+        Exit commands set self._running = False so the main loop exits cleanly.
+        """
+        cmd = self._pending_slash
+        self._pending_slash = None
+        self.cancel_token = None
+        if cmd is None:
+            return
+
+        if cmd in _EXIT_COMMANDS:
+            self._running = False
+            return
+
+        # For non-exit slash commands, submit them as a new turn.  We call
+        # on_submit directly here (we are already on a background thread so
+        # the spinner start/stop is safe).
+        if self._auto_spinner_on_submit:
+            self._start_spinner()
+        try:
+            self.on_submit(cmd)
+        finally:
+            if self._auto_spinner_on_submit:
+                self._stop_spinner()
 
     def ask_permission(self, command: str) -> str:
         """Show an inline permission prompt and return 'allow', 'save', or 'deny'."""

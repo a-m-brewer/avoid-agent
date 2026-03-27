@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+import threading
 from typing import Callable
 
 from avoid_agent.agent.context import ContextResult, ContextStrategy, prepare_context
@@ -20,6 +21,10 @@ from avoid_agent.providers import (
     ToolResultMessage,
     UserMessage,
 )
+
+class TurnCancelledError(Exception):
+    """Raised when a running user turn is cancelled via a cancel token."""
+
 
 MAX_INVALID_STEP_RETRIES = 2
 _SUCCESS_WITHOUT_EVIDENCE_RE = re.compile(
@@ -639,14 +644,33 @@ class AgentRuntime:
             save_allowed_prefixes=save_allowed_prefixes,
         )
 
-    def run_user_turn(self, messages: list[Message], text: str) -> RunTurnResult:
+    def run_user_turn(
+        self,
+        messages: list[Message],
+        text: str,
+        cancel_token: threading.Event | None = None,
+    ) -> RunTurnResult:
+        """Execute one user turn, optionally supporting mid-turn cancellation.
+
+        Args:
+            messages: Conversation history so far.
+            text: The new user message text.
+            cancel_token: Optional threading.Event.  When the event is set the
+                loop exits at the next safe checkpoint (between provider calls
+                or between tool executions) and raises TurnCancelledError.
+        """
         run_messages = [*messages, UserMessage(text=text)]
         turn_start = len(messages)
         input_tokens = 0
         invalid_step_retries = 0
         synthetic_tool_call_count = 0
 
+        def _check_cancel() -> None:
+            if cancel_token is not None and cancel_token.is_set():
+                raise TurnCancelledError("Turn cancelled by user")
+
         while True:
+            _check_cancel()
             context_messages = self._prepare_messages(run_messages, turn_start, text)
             with self._provider.stream(
                 messages=context_messages,
@@ -655,6 +679,7 @@ class AgentRuntime:
             ) as stream:
                 for provider_event in stream.event_stream():
                     self._emit(RuntimeEvent(type="provider_event", provider_event=provider_event))
+                    _check_cancel()
                 response = stream.get_final_message()
 
             input_tokens = response.input_tokens
@@ -677,6 +702,7 @@ class AgentRuntime:
             if response.message.tool_calls:
                 plan = self._controller.extract_plan(response.message)
                 for tool_call in response.message.tool_calls:
+                    _check_cancel()
                     self._emit(RuntimeEvent(type="tool_execution_start", tool_call=tool_call))
                     tool_result = self._controller.execute_tool_call(tool_call, plan=plan)
                     run_messages.append(tool_result)
@@ -692,6 +718,7 @@ class AgentRuntime:
                     name=structured.tool,
                     arguments=structured.args,
                 )
+                _check_cancel()
                 self._emit(RuntimeEvent(type="tool_execution_start", tool_call=tool_call))
                 tool_result = self._controller.execute_tool_call(tool_call, plan=structured.plan)
                 run_messages.append(tool_result)
