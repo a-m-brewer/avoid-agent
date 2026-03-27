@@ -5,12 +5,12 @@ from __future__ import annotations
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
 import json
-import os
 from pathlib import Path
 import time
 from typing import Iterator, Literal, TypeAlias
 import urllib.request
 
+from avoid_agent.infra import config
 from avoid_agent.providers.openai_codex_oauth import get_valid_credentials, load_credentials
 
 from avoid_agent.agent.tools import ToolDefinition
@@ -49,6 +49,73 @@ AVAILABLE_MODELS: dict[str, list[str]] = {
         "devstral-small:latest",
     ],
 }
+
+# Model context window sizes (in tokens). Used to compute dynamic token budgets.
+# Format: "model_suffix": context_window
+# The lookup matches model names containing these suffixes (case-insensitive).
+MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    # Anthropic models (200K context)
+    "claude-sonnet-4": 200_000,
+    "claude-opus-4": 200_000,
+    "claude-haiku-4": 200_000,
+    "claude-sonnet-4-6": 200_000,
+    "claude-opus-4-1": 200_000,
+    "claude-haiku-4-5": 200_000,
+    "claude-3-7-sonnet": 200_000,
+    "claude-3-5-sonnet": 200_000,
+    "claude-3-5-haiku": 200_000,
+    # OpenAI models
+    "gpt-5": 1_000_000,  # GPT-5 has 1M context
+    "gpt-4-turbo": 128_000,
+    "gpt-4o": 128_000,
+    "gpt-4-0613": 128_000,
+    "gpt-4": 128_000,
+    "gpt-4.1": 128_000,
+    # Codex
+    "codex-mini-latest": 128_000,
+    # Ollama (typically 8K-128K depending on model)
+    "devstral": 128_000,
+    "llama": 128_000,
+    "mistral": 32_000,
+    "qwen": 128_000,
+    "codellama": 100_000,
+}
+
+DEFAULT_CONTEXT_WINDOW = 128_000  # Fallback for unknown models
+
+# Safety margin: leave this percentage of context for output + overhead
+CONTEXT_SAFETY_MARGIN = 0.90  # Use 90% of context window for input
+
+
+def get_model_context_window(model: str) -> int:
+    """Look up the context window for a model.
+
+    Matches model names containing known suffixes (case-insensitive).
+    Returns DEFAULT_CONTEXT_WINDOW if model is not found.
+    """
+    model_lower = model.lower()
+    for suffix, window in MODEL_CONTEXT_WINDOWS.items():
+        if suffix in model_lower:
+            return window
+    return DEFAULT_CONTEXT_WINDOW
+
+
+def compute_token_budget(model: str, max_output_tokens: int = 8192) -> int:
+    """Compute the input token budget based on model context window.
+
+    Args:
+        model: Model identifier (e.g., "anthropic/claude-sonnet-4-6")
+        max_output_tokens: Max tokens expected for output (reserved from budget)
+
+    Returns:
+        Token budget for input context (system + messages).
+    """
+    context_window = get_model_context_window(model)
+    # Reserve space for output and some overhead
+    budget = int(context_window * CONTEXT_SAFETY_MARGIN) - max_output_tokens
+    # Ensure minimum budget of 20K tokens
+    return max(budget, 20_000)
+
 
 _MODEL_CACHE: dict[str, object] = {"expires_at": 0.0, "models": []}
 _MODEL_CACHE_TTL_SECONDS = 300
@@ -91,7 +158,7 @@ def _fallback_models() -> list[str]:
 def _list_dynamic_models() -> list[str]:
     providers_to_models: dict[str, list[str]] = {}
 
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    anthropic_key = config.get_env("ANTHROPIC_API_KEY")
     if anthropic_key:
         from avoid_agent.providers.anthropic import list_models as list_anthropic_models
 
@@ -102,7 +169,7 @@ def _list_dynamic_models() -> list[str]:
         except Exception:  # pylint: disable=broad-except
             pass
 
-    openai_key = os.getenv("OPENAI_API_KEY")
+    openai_key = config.get_env("OPENAI_API_KEY")
     if openai_key:
         from avoid_agent.providers.openai import list_models as list_openai_models
 
@@ -113,7 +180,7 @@ def _list_dynamic_models() -> list[str]:
         except Exception:  # pylint: disable=broad-except
             pass
 
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    openrouter_key = config.get_env("OPENROUTER_API_KEY")
     if openrouter_key:
         from avoid_agent.providers.openai import list_models as list_openai_models
 
@@ -127,7 +194,7 @@ def _list_dynamic_models() -> list[str]:
         except Exception:  # pylint: disable=broad-except
             pass
 
-    ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    ollama_host = config.get_env("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     try:
         with urllib.request.urlopen(f"{ollama_host}/api/tags", timeout=2) as response:
             payload = json.loads(response.read().decode("utf-8"))

@@ -93,6 +93,8 @@ class _FakeArgs:
         self.max_turns = kwargs.get("max_turns", 20)
         self.context_strategy = kwargs.get("context_strategy", "compact+window")
         self.no_session = kwargs.get("no_session", True)
+        self.context_budget = kwargs.get("context_budget", None)
+        self.compaction_cooldown = kwargs.get("compaction_cooldown", 3)
 
 
 def test_headless_single_turn_blocker(tmp_path: Path, capsys, monkeypatch):

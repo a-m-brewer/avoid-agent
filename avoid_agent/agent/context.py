@@ -17,28 +17,88 @@ from avoid_agent.providers import (
 ContextStrategy = Literal["window", "compact", "compact+window"]
 
 
+# Token estimation ratios - code/JSON is denser than prose
+CHARS_PER_TOKEN_PROSE = 4.0  # English prose
+CHARS_PER_TOKEN_CODE = 3.0   # Code, JSON, technical content
+CHARS_PER_TOKEN_TOOL_ARG = 2.5  # Tool arguments (JSON is very dense)
+
+
 def estimate_tokens(messages: list[Message]) -> int:
-    """Estimate token count for a message list using a chars/4 heuristic."""
-    char_count = 0
+    """Estimate token count for a message list.
+
+    Uses different ratios for different content types:
+    - Prose text: ~4 chars/token
+    - Code/JSON content: ~3 chars/token
+    - Tool arguments: ~2.5 chars/token (JSON is very dense)
+    """
+    total_tokens = 0.0
+
     for message in messages:
         if isinstance(message, UserMessage):
-            char_count += len(message.text)
+            # Determine if content is likely code-heavy
+            ratio = _estimate_ratio_for_text(message.text)
+            total_tokens += len(message.text) / ratio
+
         elif isinstance(message, AssistantMessage):
             for block in message.content:
                 if isinstance(block, AssistantTextBlock):
-                    char_count += len(block.text)
+                    ratio = _estimate_ratio_for_text(block.text)
+                    total_tokens += len(block.text) / ratio
                 elif isinstance(block, AssistantThinkingBlock):
-                    char_count += len(block.text)
+                    # Thinking is typically prose
+                    total_tokens += len(block.text) / CHARS_PER_TOKEN_PROSE
                 elif isinstance(block, ProviderToolCall):
-                    char_count += len(block.name)
-                    char_count += len(str(block.arguments))
-                    char_count += len(block.id)
-        elif isinstance(message, ToolResultMessage):
-            char_count += len(message.content)
-            char_count += len(message.tool_call_id)
-            char_count += len(message.tool_name or "")
+                    # Tool name is short prose-like
+                    total_tokens += len(block.name) / CHARS_PER_TOKEN_PROSE
+                    # Tool ID is short
+                    total_tokens += len(block.id) / CHARS_PER_TOKEN_PROSE
+                    # Arguments are JSON (dense)
+                    args_str = str(block.arguments)
+                    total_tokens += len(args_str) / CHARS_PER_TOKEN_TOOL_ARG
 
-    return int(char_count / 4)
+        elif isinstance(message, ToolResultMessage):
+            # Tool results are often output (could be code or prose)
+            ratio = _estimate_ratio_for_text(message.content)
+            total_tokens += len(message.content) / ratio
+            # Tool name and ID are short
+            total_tokens += len(message.tool_call_id) / CHARS_PER_TOKEN_PROSE
+            if message.tool_name:
+                total_tokens += len(message.tool_name) / CHARS_PER_TOKEN_PROSE
+
+    return int(total_tokens)
+
+
+def _estimate_ratio_for_text(text: str) -> float:
+    """Estimate chars-per-token ratio based on content characteristics.
+
+    Returns a lower ratio (more tokens) for code-heavy content,
+    higher ratio for prose-heavy content.
+    """
+    if not text:
+        return CHARS_PER_TOKEN_PROSE
+
+    # Check for code-like patterns
+    code_indicators = [
+        '{', '}', '[', ']', '(', ')',  # Brackets
+        'def ', 'class ', 'import ', 'from ',  # Python keywords
+        'function ', 'const ', 'let ', 'var ',  # JS keywords
+        '->', '=>', '::',  # Operators
+        '    ', '\t',  # Indentation
+        '```',  # Code blocks
+        ': ', '= ',  # Assignments
+    ]
+
+    code_score = sum(1 for indicator in code_indicators if indicator in text)
+    # If more than 3 code indicators per 100 chars, it's code-heavy
+    density = code_score / (len(text) / 100)
+
+    if density > 3:
+        return CHARS_PER_TOKEN_CODE
+    elif density > 1.5:
+        # Mixed content - interpolate
+        return CHARS_PER_TOKEN_PROSE - (CHARS_PER_TOKEN_PROSE - CHARS_PER_TOKEN_CODE) * min(density / 3, 1)
+
+    return CHARS_PER_TOKEN_PROSE
 
 
 # ---------------------------------------------------------------------------

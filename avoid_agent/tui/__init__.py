@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 
+from avoid_agent.infra import config
 from avoid_agent.tui.components.conversation import AssistantItem, ConversationComponent, PermissionItem, ToolCallItem, UserItem
 from avoid_agent.tui.components.input_component import InputComponent
 from avoid_agent.tui.components.spinner import SpinnerComponent
@@ -12,14 +13,6 @@ from avoid_agent.tui.components.status_bar import StatusBarComponent
 from avoid_agent.tui.history import History
 from avoid_agent.tui.keys import parse_key
 from avoid_agent.tui.renderer import Renderer
-from avoid_agent.tui.terminal import Terminal
-
-
-def _env_flag(name: str) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class TUI:
@@ -50,8 +43,8 @@ class TUI:
         self._running = False
         self._auto_spinner_on_submit = auto_spinner_on_submit
 
-        self._debug_keys = _env_flag("AVOID_AGENT_DEBUG_KEYS")
-        self._debug_keys_path = os.getenv("AVOID_AGENT_DEBUG_KEYS_PATH", "/tmp/avoid-agent-keys.log")
+        self._debug_keys = config.env_flag("AVOID_AGENT_DEBUG_KEYS")
+        self._debug_keys_path = config.get_env("AVOID_AGENT_DEBUG_KEYS_PATH", "/tmp/avoid-agent-keys.log")
 
     def _log_key_debug(self, data: bytes, key: str) -> None:
         if not self._debug_keys:

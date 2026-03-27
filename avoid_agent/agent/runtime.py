@@ -614,15 +614,24 @@ class AgentRuntime:
         save_allowed_prefixes: Callable[[set[str]], None] | None = None,
         on_event: Callable[[RuntimeEvent], None] | None = None,
         context_strategy: ContextStrategy = "compact+window",
-        token_budget: int = 40_000,
+        token_budget: int | None = None,
         tool_choice: ToolChoice = "auto",
+        compaction_cooldown_turns: int = 3,
     ):
         self._provider = provider
         self._on_event = on_event
         self._context_strategy = context_strategy
-        self._token_budget = token_budget
+        # Use provided token_budget or compute dynamically from model
+        if token_budget is not None:
+            self._token_budget = token_budget
+        else:
+            from avoid_agent.providers import compute_token_budget
+            self._token_budget = compute_token_budget(provider.model, provider.max_tokens)
         self._tool_choice = tool_choice
         self._tool_definitions = tool_definitions
+        self._compaction_cooldown_turns = compaction_cooldown_turns
+        self._turn_count = 0
+        self._last_compaction_turn = -compaction_cooldown_turns  # Allow first compaction
         self._controller = ExecutionController(
             tool_definitions=tool_definitions,
             allowed_prefixes=allowed_prefixes,
@@ -672,6 +681,7 @@ class AgentRuntime:
                     tool_result = self._controller.execute_tool_call(tool_call, plan=plan)
                     run_messages.append(tool_result)
                     self._emit(RuntimeEvent(type="tool_result", tool_result=tool_result))
+                self._turn_count += 1
                 invalid_step_retries = 0
                 continue
 
@@ -686,6 +696,7 @@ class AgentRuntime:
                 tool_result = self._controller.execute_tool_call(tool_call, plan=structured.plan)
                 run_messages.append(tool_result)
                 self._emit(RuntimeEvent(type="tool_result", tool_result=tool_result))
+                self._turn_count += 1
                 invalid_step_retries = 0
                 continue
 
@@ -730,6 +741,22 @@ class AgentRuntime:
         user_request: str,
     ) -> list[Message]:
         """Apply context management and append grounded controller state."""
+        # Check hysteresis: don't compact if we compacted recently unless way over budget
+        turns_since_compaction = self._turn_count - self._last_compaction_turn
+        over_budget_threshold = 1.10  # Only force compaction if 10% over budget
+
+        if self._context_strategy in ("compact", "compact+window"):
+            # Check if we're over budget enough to warrant immediate compaction
+            estimated = self._estimate_tokens(messages)
+            if estimated <= self._token_budget * over_budget_threshold:
+                # Within hysteresis window - skip compaction
+                if turns_since_compaction < self._compaction_cooldown_turns:
+                    grounded_messages = list(messages)
+                    grounded_messages.append(
+                        self._controller.build_state_message(messages, turn_start, user_request)
+                    )
+                    return grounded_messages
+
         result: ContextResult = prepare_context(
             messages=messages,
             token_budget=self._token_budget,
@@ -737,6 +764,7 @@ class AgentRuntime:
             summarize=self._summarize,
         )
         if result.action != "none":
+            self._last_compaction_turn = self._turn_count
             self._emit(
                 RuntimeEvent(
                     type="context_trimmed",
@@ -751,6 +779,11 @@ class AgentRuntime:
             self._controller.build_state_message(messages, turn_start, user_request)
         )
         return grounded_messages
+
+    def _estimate_tokens(self, messages: list[Message]) -> int:
+        """Estimate tokens using the same heuristic as context.py."""
+        from avoid_agent.agent.context import estimate_tokens
+        return estimate_tokens(messages)
 
     def _emit(self, event: RuntimeEvent) -> None:
         if self._on_event is not None:

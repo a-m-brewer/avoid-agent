@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import os
 import queue
 import re
@@ -17,6 +18,7 @@ from dotenv import load_dotenv
 from avoid_agent.agent.context import ContextStrategy
 from avoid_agent.agent.runtime import AgentRuntime, RuntimeEvent, _parse_structured_action
 from avoid_agent.agent.tools.finder import find_available_tools
+from avoid_agent.infra import config, setup_logging
 from avoid_agent.providers import (
     AssistantMessage,
     Message,
@@ -1279,6 +1281,8 @@ def _run_headless(args) -> None:
                 save_allowed_prefixes=save_allowed if not no_session else None,
                 on_event=capturing_handler,
                 context_strategy=context_strategy,
+                token_budget=args.context_budget,
+                compaction_cooldown_turns=args.compaction_cooldown,
             )
             result = runtime.run_user_turn(messages, prompt)
             messages = result.messages
@@ -1592,6 +1596,18 @@ def main() -> None:
         "--no-session",
         action="store_true",
         help="Don't persist session (ephemeral run)",
+    )
+    headless_parser.add_argument(
+        "--context-budget",
+        type=int,
+        default=None,
+        help="Max input tokens for context (default: auto based on model)",
+    )
+    headless_parser.add_argument(
+        "--compaction-cooldown",
+        type=int,
+        default=3,
+        help="Min turns between compactions (default: 3)",
     )
 
     selfdev_parser = subparsers.add_parser(
