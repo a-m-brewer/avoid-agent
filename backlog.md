@@ -275,7 +275,7 @@ Mark items `[x]` when done, `[!]` if failed (with a note).
   **Verify:** `python -m avoid_agent selfdev --help` works. No new entries in `requirements.txt`
   or `pyproject.toml` dependencies.
 
-- [ ] Create a systemd unit file template for long-running selfdev <!-- size:S -->
+- [x] Create a systemd unit file template for long-running selfdev <!-- size:S -->
   **Goal:** Make it easy for users to run the selfdev loop as a background service that
   restarts automatically via `supervisor.sh`.
 
