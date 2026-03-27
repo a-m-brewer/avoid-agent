@@ -15,6 +15,7 @@ from avoid_agent.agent.tools import ToolRunResult, tool
 logger = logging.getLogger(__name__)
 
 _PREVIEW_LIMIT = 1200
+_BASH_QUIET_THRESHOLD = 20
 _DIFF_LIMIT = 4000
 
 
@@ -193,9 +194,21 @@ def run_bash(command: Annotated[str, "The bash command to run."]) -> str:
         cwd=os.getcwd(),
         check=False,
     )
+
+    if result.returncode == 0:
+        stdout_lines = result.stdout.count("\n")
+        if stdout_lines > _BASH_QUIET_THRESHOLD:
+            display_stdout = (
+                f"(success, {stdout_lines} lines of output suppressed — re-run with verbose flag if needed)"
+            )
+        else:
+            display_stdout = result.stdout
+    else:
+        display_stdout = result.stdout
+
     parts = [f"Exit code: {result.returncode}"]
-    if result.stdout:
-        parts.append(f"STDOUT:\n{result.stdout}")
+    if display_stdout:
+        parts.append(f"STDOUT:\n{display_stdout}")
     if result.stderr:
         parts.append(f"STDERR:\n{result.stderr}")
     if not result.stdout and not result.stderr:
