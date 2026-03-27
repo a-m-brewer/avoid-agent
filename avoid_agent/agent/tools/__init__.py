@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Callable
 
-
+# Define all shared types BEFORE any submodule imports to avoid circular imports
 class ParameterType(StrEnum):
     """
     Represents parameter types as a string enumeration, mapping str, int,
@@ -23,6 +23,7 @@ TYPE_MAP = {
     float: ParameterType.FLOAT,
     bool: ParameterType.BOOL,
 }
+
 
 @dataclass(slots=True)
 class ParamDefinition:
@@ -49,6 +50,7 @@ class ToolRunResult:
     details: dict = field(default_factory=dict)
 
 
+# Global registry for all tools
 tool_registry: dict[str, Callable] = {}
 
 
@@ -68,3 +70,9 @@ def run_tool(name: str, arguments: dict) -> ToolRunResult:
     if isinstance(result, ToolRunResult):
         return result
     return ToolRunResult(content=str(result))
+
+
+# Import core modules to trigger tool discovery and extension loading
+# This is done after defining all types to avoid circular imports
+from avoid_agent.agent.tools import core as _core_module
+from avoid_agent.agent.tools import inspector as _inspector_module

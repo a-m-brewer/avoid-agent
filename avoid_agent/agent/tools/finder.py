@@ -72,3 +72,12 @@ def find_available_tools(
         tools.append(tool_definition)
 
     return tools
+
+
+def get_tool_descriptions() -> dict[str, str]:
+    """Get a dict of tool_name -> description for all registered tools.
+    
+    This enables dynamic discovery of extension tools for system prompt generation.
+    """
+    tools = find_available_tools()
+    return {t.name: t.description.split('\n')[0].strip() for t in tools}

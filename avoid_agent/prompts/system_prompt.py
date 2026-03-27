@@ -234,8 +234,9 @@ def _tools_section(selected_tools: list[str] | None, tool_snippets: dict[str, st
             "edit_file": "make targeted edits to existing files",
             "run_bash": "run shell commands for search, tests, and git",
         }
+        # Use tool_snippets for descriptions if available (allows extensions to provide their own)
         listing = "\n".join(
-            f"- {name}: {descriptions.get(name, 'available tool')}" for name in tools
+            f"- {name}: {tool_snippets.get(name, descriptions.get(name, 'available tool'))}" for name in tools
         )
 
     return _section("Available Tools", listing)
@@ -404,6 +405,14 @@ def build_system_prompt(
         git_status=git_status,
         top_level_file_structure=top_level_file_structure,
     )
+
+    # Dynamically discover all available tools (including extensions) for tool listings
+    # This ensures extension tools are auto-discovered without hardcoding
+    if opts.selected_tools is None:
+        from avoid_agent.agent.tools.finder import get_tool_descriptions
+        tool_descriptions = get_tool_descriptions()
+        opts.tool_snippets = tool_descriptions
+        opts.selected_tools = list(tool_descriptions.keys())
 
     base_prompt = opts.custom_prompt.strip() if opts.custom_prompt else _default_base_prompt(opts)
 
