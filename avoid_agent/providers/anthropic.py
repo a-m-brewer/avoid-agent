@@ -278,6 +278,21 @@ class AnthropicProvider(Provider):
 
     def __convert_to_provider_message(self, message: Message) -> dict:
         if isinstance(message, UserMessage):
+            # If there are attached images, build a multipart content array.
+            if message.images:
+                content: list[dict] = []
+                for img in message.images:
+                    content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": img.media_type,
+                            "data": img.data,
+                        },
+                    })
+                if message.text:
+                    content.append({"type": "text", "text": message.text})
+                return {"role": "user", "content": content}
             return {"role": "user", "content": message.text}
 
         if isinstance(message, AssistantMessage):

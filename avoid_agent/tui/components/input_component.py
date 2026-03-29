@@ -1,15 +1,22 @@
 """Component for rendering the user input line and cursor."""
 
 from avoid_agent.tui.input_line import InputLine
-from avoid_agent.tui.style import bg_dark
+from avoid_agent.tui.style import bg_dark, cyan
 
 
 class InputComponent:
-    """Component for rendering the user input line and cursor."""
+    """Component for rendering the user input line and cursor.
+
+    ``pending_images`` is a list of :class:`~avoid_agent.tui.clipboard.ClipboardImage`
+    objects queued for the next submission.  The component renders a compact
+    indicator line beneath the text input when images are pending.
+    """
 
     def __init__(self, prompt: str = "You: "):
         self.prompt = prompt
         self.line = InputLine()
+        # ClipboardImage objects waiting to be attached to the next message.
+        self.pending_images: list = []
 
     def _prefix(self) -> str:
         return " " + self.prompt
@@ -40,6 +47,21 @@ class InputComponent:
             return 1
         return (length + width - 1) // width
 
+    def _image_indicator_line(self, width: int) -> str | None:
+        """Return a styled image-count indicator, or None if no images are queued."""
+        if not self.pending_images:
+            return None
+        from avoid_agent.tui.clipboard import format_size
+        count = len(self.pending_images)
+        total_bytes = sum(img.size_bytes for img in self.pending_images)
+        label = (
+            f" [image: {format_size(total_bytes)}]"
+            if count == 1
+            else f" [{count} images: {format_size(total_bytes)}]"
+        )
+        padded = label + " " * max(0, width - len(label))
+        return cyan(padded[:width])
+
     def render(self, width: int) -> list[str]:
         plain_lines = self._plain_logical_lines()
 
@@ -60,10 +82,19 @@ class InputComponent:
         if not lines:
             lines.append(bg_dark(" " * width))
 
+        # Append image indicator line below the text input when images are queued.
+        indicator = self._image_indicator_line(width)
+        if indicator is not None:
+            lines.append(indicator)
+
         return lines
 
     def cursor_position(self, width: int) -> tuple[int, int]:
-        """Return cursor (row, col) within rendered input lines."""
+        """Return cursor (row, col) within rendered input lines.
+
+        The image indicator line (if present) is rendered *below* the text
+        input so it does not affect cursor positioning within the input itself.
+        """
         if width <= 0:
             return (0, 0)
 

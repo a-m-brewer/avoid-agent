@@ -282,13 +282,20 @@ class TUI:
             self._in_paste = True
         elif key == "paste_end":
             self._in_paste = False
+        elif key == "ctrl+v":
+            # Ctrl+V: attempt to capture an image from the system clipboard.
+            # Text paste via Ctrl+V is not handled here — the terminal's
+            # bracketed-paste mode (paste_start / paste_end) covers that.
+            self._try_capture_clipboard_image()
         elif key == "enter":
             if self._in_paste:
                 self._input.line.insert("\n")
             else:
                 text = self._input.line.clear()
-                if text.strip():
-                    self._history.push(text)
+                has_images = bool(self._input.pending_images)
+                if text.strip() or has_images:
+                    if text.strip():
+                        self._history.push(text)
                     stripped = text.strip()
 
                     if self._is_submit_busy():
@@ -311,9 +318,18 @@ class TUI:
                         self._safe_render()
                         return True
 
-                    self._conversation.items.append(UserItem(text=text))
+                    # Handle /paste-image slash command
+                    if stripped == "/paste-image":
+                        self._try_capture_clipboard_image()
+                        return False
+
+                    # Drain pending images and submit.
+                    images = list(self._input.pending_images)
+                    self._input.pending_images.clear()
+
+                    self._conversation.items.append(UserItem(text=text, images=images))
                     self._safe_render()
-                    self._dispatch_submit(text)
+                    self._dispatch_submit(text, images=images)
                     return False
         elif key == "shift+enter":
             self._input.line.insert("\n")

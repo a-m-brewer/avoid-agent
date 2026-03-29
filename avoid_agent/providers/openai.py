@@ -168,6 +168,19 @@ class OpenAIProvider(Provider):
 
     def __convert_to_provider_message(self, msg: Message) -> dict:
         if isinstance(msg, UserMessage):
+            # If there are attached images, build a multipart content array.
+            if msg.images:
+                content: list[dict] = []
+                for img in msg.images:
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{img.media_type};base64,{img.data}",
+                        },
+                    })
+                if msg.text:
+                    content.append({"type": "text", "text": msg.text})
+                return {"role": "user", "content": content}
             return {"role": "user", "content": msg.text}
 
         if isinstance(msg, AssistantMessage):

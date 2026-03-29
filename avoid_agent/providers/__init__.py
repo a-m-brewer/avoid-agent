@@ -319,15 +319,31 @@ AssistantContentBlock: TypeAlias = (
 
 
 @dataclass
+class ImageBlock:
+    """An image attached to a user message (base64-encoded)."""
+
+    data: str        # base64-encoded image bytes
+    media_type: str  # e.g. "image/png", "image/jpeg"
+    type: Literal["image"] = "image"
+
+
+@dataclass
 class Message(metaclass=ABCMeta):
     """Base class for messages exchanged with the provider."""
 
 
 @dataclass
 class UserMessage(Message):
-    """Message from the user."""
+    """Message from the user.
+
+    ``images`` carries zero or more base64-encoded screenshots/screenshots
+    attached by the user via clipboard paste.  Providers that support vision
+    will include these as image content blocks alongside the text.  Providers
+    that do not support vision will silently ignore the images field.
+    """
 
     text: str
+    images: list[ImageBlock] = field(default_factory=list)
     timestamp: int = field(default_factory=_now_ms)
 
 
