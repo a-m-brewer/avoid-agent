@@ -538,8 +538,8 @@ def test_runtime_regrounds_follow_up_steps_with_execution_state(tmp_path: Path):
         message
         for message in second_request_messages
         if isinstance(message, UserMessage)
-        and message.text.startswith("[EXECUTION STATE - CONTROLLER GENERATED]")
+        and message.text.startswith("[EXECUTION STATE]")
     ]
     assert len(state_messages) == 1
     assert "call_1" in state_messages[0].text
-    assert "Verified tool_call_id values this turn: call_1" in state_messages[0].text
+    assert "Verified IDs: call_1" in state_messages[0].text

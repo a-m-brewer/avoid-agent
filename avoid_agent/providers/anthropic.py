@@ -105,6 +105,8 @@ class AnthropicStream(ProviderStream):
                         final_message.usage.input_tokens
                         + getattr(final_message.usage, "output_tokens", 0)
                     ),
+                    cache_read_input_tokens=getattr(final_message.usage, "cache_read_input_tokens", 0) or 0,
+                    cache_creation_input_tokens=getattr(final_message.usage, "cache_creation_input_tokens", 0) or 0,
                 ),
             ),
             stop_reason=stop_reason,
@@ -183,6 +185,28 @@ class AnthropicProvider(Provider):
         else:
             self._client = Anthropic(api_key=api_key)
 
+    @staticmethod
+    def _add_conversation_cache_control(messages: list[dict]) -> list[dict]:
+        """Add cache_control to the last user message to cache conversation history.
+
+        This tells Anthropic to cache everything from the start up to this
+        breakpoint.  On subsequent turns the cached prefix is served at 10%
+        of the normal input-token cost.
+        """
+        if not messages:
+            return messages
+        last = messages[-1]
+        if last.get("role") != "user":
+            return messages
+        content = last["content"]
+        if isinstance(content, str):
+            last["content"] = [
+                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}},
+            ]
+        elif isinstance(content, list) and content:
+            content[-1]["cache_control"] = {"type": "ephemeral"}
+        return messages
+
     def stream(
         self,
         messages: list[Message],
@@ -190,6 +214,7 @@ class AnthropicProvider(Provider):
         tool_choice: ToolChoice = "auto",
     ) -> ProviderStream:
         provider_messages = self.__get_provider_messages(normalize_messages(messages))
+        provider_messages = self._add_conversation_cache_control(provider_messages)
         provider_tools = self.__get_provider_tools(tools)
 
         # For OAuth tokens, the system prompt MUST be a structured array with the
@@ -201,7 +226,9 @@ class AnthropicProvider(Provider):
                 {"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}},
             ]
         else:
-            system_param = self.system
+            system_param = [
+                {"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}},
+            ]
 
         kwargs: dict = {
             "model": self.model,

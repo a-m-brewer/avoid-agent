@@ -399,17 +399,15 @@ class ExecutionController:
         last_plan = self._last_plan(tool_results)
 
         lines = [
-            "[EXECUTION STATE - CONTROLLER GENERATED]",
-            "This is grounded controller state, not a new user request.",
-            f"Current user request: {user_request}",
-            f"Current plan: {last_plan}",
-            "Verified tool_call_id values this turn: "
-            + (", ".join(verified_ids) if verified_ids else "none"),
-            "Completed steps:",
+            "[EXECUTION STATE]",
+            f"Request: {_preview(user_request, limit=80)}",
+            f"Plan: {last_plan}",
+            "Verified IDs: " + (", ".join(verified_ids) if verified_ids else "none"),
+            "Steps:",
         ]
 
         if tool_results:
-            for tool_result in tool_results[-4:]:
+            for tool_result in tool_results[-3:]:
                 verification = tool_result.details.get("verification", {})
                 action = tool_result.details.get("action", {})
                 proof = tool_result.details.get("proof", {})
@@ -422,28 +420,20 @@ class ExecutionController:
         else:
             lines.append("- none")
 
-        lines.append("Recent tool outputs:")
+        lines.append("Outputs:")
         if tool_results:
-            for tool_result in tool_results[-3:]:
+            for tool_result in tool_results[-2:]:
                 lines.append(
-                    f"- {tool_result.tool_call_id}: {_preview(tool_result.content)}"
+                    f"- {tool_result.tool_call_id}: {_preview(tool_result.content, limit=150)}"
                 )
         else:
             lines.append("- none")
 
-        lines.append("Not yet executed:")
-        if tool_results:
-            lines.append("- Only the tool calls listed above are real. Nothing else has happened.")
-        else:
-            lines.append("- No tool has been executed yet in this turn.")
-
         lines.extend(
             [
-                "If you need another action, call a real tool.",
-                "If you are blocked, respond with JSON only:",
-                '{"plan":"...","action":{"tool":"blocker","args":{"reason":"..."}}}',
-                "If the task is complete, respond with JSON only and cite verified evidence:",
-                '{"plan":"...","action":{"tool":"complete","args":{"summary":"...","evidence":["tool_call_id"]}}}',
+                "Next: call a tool, or respond with JSON only.",
+                "Blocked: {plan,action:{tool:blocker,args:{reason}}}",
+                "Complete: {plan,action:{tool:complete,args:{summary,evidence:[ids]}}}",
             ]
         )
         return UserMessage(text="\n".join(lines))
