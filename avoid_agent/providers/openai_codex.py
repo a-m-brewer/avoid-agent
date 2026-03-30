@@ -128,6 +128,7 @@ class CodexStream(ProviderStream):
         self._reasoning_items: list[dict] = []
         self._usage = Usage()
         self._stop_reason: StopReason = "stop"
+        self._response_id: str | None = None
         # Per-item streaming state
         self._current_item_type: str | None = None
         self._pending_args = ""
@@ -279,6 +280,7 @@ class CodexStream(ProviderStream):
 
             if event_type in ("response.completed", "response.done", "response.incomplete"):
                 response_obj = event.get("response", {})
+                self._response_id = response_obj.get("id")
                 usage = response_obj.get("usage", {})
                 self._usage = Usage(
                     input_tokens=usage.get("input_tokens", 0),
@@ -335,6 +337,7 @@ class CodexStream(ProviderStream):
                 content=self._content,
                 stop_reason=self._stop_reason,
                 usage=self._usage,
+                provider_state={"response_id": self._response_id} if self._response_id else {},
             ),
             stop_reason=self._stop_reason,
             input_tokens=self._usage.input_tokens,
@@ -362,6 +365,8 @@ class OpenAICodexProvider(Provider):
             effort=effort,
         )
         self._credentials = credentials
+        # Codex (Responses API) does not accept image content blocks.
+        self.supports_vision = False
 
     def _refresh_auth(self) -> None:
         from avoid_agent.providers.openai_codex_oauth import refresh_credentials  # pylint: disable=import-outside-toplevel
@@ -385,21 +390,36 @@ class OpenAICodexProvider(Provider):
         tools: list[ToolDefinition],
         tool_choice: ToolChoice = "auto",
     ) -> dict:
+        normalized = normalize_messages(messages)
+        previous_response_id, input_messages = self._continuation_state(normalized)
         body: dict = {
             "model": self.model,
-            "store": False,
+            "store": True,
             "stream": True,
             "instructions": self.system,
-            "input": self._convert_messages(normalize_messages(messages)),
+            "input": self._convert_messages(input_messages),
             "tool_choice": tool_choice if tools else "none",
             "parallel_tool_calls": True,
         }
+        if previous_response_id:
+            body["previous_response_id"] = previous_response_id
         # Optional reasoning effort control
         if self.effort:
             body["reasoning"] = {"effort": self.effort}
         if tools:
             body["tools"] = [self._convert_tool(t) for t in tools]
         return body
+
+    @staticmethod
+    def _continuation_state(messages: list[Message]) -> tuple[str | None, list[Message]]:
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if not isinstance(message, AssistantMessage):
+                continue
+            response_id = message.provider_state.get("response_id")
+            if isinstance(response_id, str) and response_id:
+                return response_id, messages[index + 1:]
+        return None, messages
 
     def _convert_messages(self, messages: list[Message]) -> list[dict]:
         result = []

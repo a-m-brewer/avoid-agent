@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Union
 
 from avoid_agent.tui.style import bg_user, bold, cyan, yellow, gray, magenta
@@ -9,6 +9,7 @@ class UserItem:
     """Represents a message from the user."""
 
     text: str
+    images: list = field(default_factory=list)
 
 
 @dataclass

@@ -130,6 +130,7 @@ def run(_args=None) -> None:
             tui.set_warning("! thinking n/a")
         else:
             tui.set_warning(None)
+        tui.set_vision_enabled(provider.supports_vision)
         return provider
 
     provider = build_provider(active_model)
@@ -154,7 +155,7 @@ def run(_args=None) -> None:
     tui.set_thinking_enabled(thinking_enabled)
     tui.set_effort(effort)
 
-    def on_submit(text: str) -> None:
+    def on_submit(text: str, images: list | None = None) -> None:
         nonlocal messages, active_session, context_strategy, provider, active_model, thinking_enabled, effort
 
         if text.strip() == "/strategy":
@@ -280,6 +281,20 @@ def run(_args=None) -> None:
             for item in messages_to_items(messages):
                 tui.push_item(item)
             tui.report_info(f"Resumed session: {active_session}")
+            return
+
+        if text.strip().startswith("/image "):
+            # Load an image from a file path and queue it for the next message.
+            path = text.strip()[len("/image "):].strip()
+            if not path:
+                tui.report_info("Usage: /image <path/to/image.png>")
+                return
+            if not provider.supports_vision:
+                tui.report_info(
+                    f"Warning: {active_model} does not support vision. "
+                    "Image will be queued but the model may ignore it."
+                )
+            tui._try_load_image_from_path(path)
             return
 
         if text.strip().startswith("/learnings"):
@@ -443,7 +458,12 @@ def run(_args=None) -> None:
                 on_event=handle_runtime_event,
                 context_strategy=context_strategy,
             )
-            result = runtime.run_user_turn(messages, text, cancel_token=tui.cancel_token)
+            # Warn if images are attached but model doesn't support vision.
+            if images and not provider.supports_vision:
+                tui.report_info(
+                    f"Warning: {active_model} does not support vision. Images will be ignored."
+                )
+            result = runtime.run_user_turn(messages, text, cancel_token=tui.cancel_token, images=images)
             messages = result.messages
             if messages and isinstance(messages[-1], AssistantMessage) and messages[-1].text:
                 display_text = _display_text_for_assistant_message(messages[-1])

@@ -55,6 +55,8 @@ def test_default_prompt_has_split_policy_sections():
     assert "## Reliability Constraints" in prompt
     assert '"action":{"tool":"blocker"' in prompt
     assert '"action":{"tool":"complete"' in prompt
+    assert "Use read_file ranges for large files" in prompt
+    assert "Prefer edit_file's exact-string or line-range modes" in prompt
 
 
 def test_identity_mentions_avoid_agent_and_its_codebase():

@@ -29,6 +29,13 @@ def optional_param_tool(
     """Tool with an optional parameter."""
 
 
+def optional_annotated_union_tool(
+    name: Annotated[str, "The name"],
+    start_line: Annotated[int, "Optional starting line"] | None = None,
+) -> None:
+    """Tool with an optional annotated union parameter."""
+
+
 def no_docstring_tool(path: Annotated[str, "A path"]) -> str:
     pass  # intentionally no docstring
 
@@ -91,6 +98,13 @@ class TestGenerateToolSchema:
         result = generate_tool_schema(optional_param_tool)
         name_param = result.parameters[0]
         assert name_param.required is True
+
+    def test_optional_annotated_union_parameter(self):
+        result = generate_tool_schema(optional_annotated_union_tool)
+        start_line_param = result.parameters[1]
+        assert start_line_param.type == ParameterType.INT
+        assert start_line_param.description == "Optional starting line"
+        assert start_line_param.required is False
 
     def test_missing_docstring_raises(self):
         with pytest.raises(MissingDescriptionException):

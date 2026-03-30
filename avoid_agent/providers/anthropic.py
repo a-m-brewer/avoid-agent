@@ -3,6 +3,7 @@
 from collections.abc import Iterator
 from functools import lru_cache
 from itertools import groupby
+import json
 import re
 import subprocess
 
@@ -187,24 +188,45 @@ class AnthropicProvider(Provider):
 
     @staticmethod
     def _add_conversation_cache_control(messages: list[dict]) -> list[dict]:
-        """Add cache_control to the last user message to cache conversation history.
+        """Add a few cache-control breakpoints across recent conversation turns.
 
-        This tells Anthropic to cache everything from the start up to this
-        breakpoint.  On subsequent turns the cached prefix is served at 10%
-        of the normal input-token cost.
+        Anthropic prompt caching works on prefix breakpoints. Marking only the
+        final user message helps, but adding a few breakpoints across the most
+        recent turns gives the API more stable reuse opportunities when a tool
+        loop appends another user/tool-result block.
         """
         if not messages:
             return messages
-        last = messages[-1]
-        if last.get("role") != "user":
-            return messages
-        content = last["content"]
-        if isinstance(content, str):
-            last["content"] = [
-                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}},
-            ]
-        elif isinstance(content, list) and content:
-            content[-1]["cache_control"] = {"type": "ephemeral"}
+
+        breakpoints = 0
+        for index in range(len(messages) - 1, -1, -1):
+            if breakpoints >= 3:
+                break
+
+            message = messages[index]
+            if message.get("role") != "user":
+                continue
+
+            content = message.get("content")
+            if isinstance(content, str):
+                message["content"] = [
+                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}},
+                ]
+                breakpoints += 1
+                continue
+
+            if not isinstance(content, list) or not content:
+                continue
+
+            for block_index in range(len(content) - 1, -1, -1):
+                block = content[block_index]
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") not in {"text", "tool_result"}:
+                    continue
+                block["cache_control"] = {"type": "ephemeral"}
+                breakpoints += 1
+                break
         return messages
 
     def stream(
@@ -254,6 +276,60 @@ class AnthropicProvider(Provider):
 
         anthropic_stream = self._client.messages.stream(**kwargs)
         return AnthropicStream(ctx=anthropic_stream)
+
+    def request_metrics(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition],
+        tool_choice: ToolChoice = "auto",
+    ) -> dict:
+        provider_messages = self.__get_provider_messages(normalize_messages(messages))
+        provider_messages = self._add_conversation_cache_control(provider_messages)
+        provider_tools = self.__get_provider_tools(tools)
+
+        if self._oauth:
+            system_param: str | list[dict] = [
+                {"type": "text", "text": _CC_IDENTITY, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}},
+            ]
+        else:
+            system_param = [
+                {"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}},
+            ]
+
+        kwargs: dict = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "system": system_param,
+            "tools": provider_tools,
+            "messages": provider_messages,
+        }
+        if tool_choice != "auto" and provider_tools:
+            kwargs["tool_choice"] = {"type": "any" if tool_choice == "required" else tool_choice}
+        if self.thinking_enabled:
+            if _supports_adaptive_thinking(self.model):
+                kwargs["thinking"] = {"type": "adaptive"}
+            else:
+                budget = min(1024, max(128, self.max_tokens // 4))
+                kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        elif _supports_adaptive_thinking(self.model):
+            kwargs["thinking"] = {"type": "disabled"}
+
+        payload = json.dumps(kwargs, sort_keys=True)
+        return {
+            "provider": "anthropic",
+            "wire_chars": len(payload),
+            "messages": len(provider_messages),
+            "tools": len(provider_tools),
+            "cache_breakpoints": sum(
+                1
+                for message in provider_messages
+                for block in (
+                    message.get("content") if isinstance(message.get("content"), list) else []
+                )
+                if isinstance(block, dict) and block.get("cache_control")
+            ),
+        }
 
     def __get_provider_messages(self, messages: list[Message]) -> list[dict]:
         result = []

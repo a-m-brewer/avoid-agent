@@ -267,6 +267,10 @@ def _policy_sections(
     )
     add_unique(
         operational,
+        "Use read_file ranges for large files: search first, then read the smallest useful line window before escalating to a full-file read.",
+    )
+    add_unique(
+        operational,
         "Never guess file paths — discover them with run_bash (for example via ls/find).",
     )
     if "run_bash" in tools:
@@ -321,6 +325,10 @@ def _policy_sections(
     )
     add_unique(reliability, "Do not fabricate files, command outputs, or test results.")
     add_unique(reliability, "Resolve uncertainty by inspecting code or running commands.")
+    add_unique(
+        reliability,
+        "Prefer edit_file's exact-string or line-range modes for targeted changes; avoid whole-file rewrites unless the task genuinely requires them.",
+    )
     add_unique(
         reliability,
         "After writing code that calls external APIs or services, verify it works by "

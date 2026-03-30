@@ -151,6 +151,10 @@ class TUI:
         self._status.effort = effort
         self._safe_render()
 
+    def set_vision_enabled(self, enabled: bool) -> None:
+        self._status.vision_enabled = bool(enabled)
+        self._safe_render()
+
     def set_warning(self, text: str | None) -> None:
         self._status.warning = text
         self._safe_render()
@@ -366,7 +370,7 @@ class TUI:
         self._safe_render()
         return False
 
-    def _dispatch_submit(self, text: str) -> None:
+    def _dispatch_submit(self, text: str, images: list | None = None) -> None:
         """Run on_submit in a background thread so the key loop stays live.
 
         When the thread finishes (normally or after cancellation) any pending
@@ -374,12 +378,13 @@ class TUI:
         """
         token = threading.Event()
         self.cancel_token = token
+        _images = images or []
 
         def _run() -> None:
             if self._auto_spinner_on_submit:
                 self._start_spinner()
             try:
-                self.on_submit(text)
+                self.on_submit(text, _images)
             finally:
                 if self._auto_spinner_on_submit:
                     self._stop_spinner()
@@ -471,6 +476,62 @@ class TUI:
             self._spinner.tick()
             self._safe_render()
             time.sleep(0.1)
+
+    def _try_capture_clipboard_image(self) -> None:
+        """Attempt to read an image from the system clipboard and queue it."""
+        from avoid_agent.tui.clipboard import capture_clipboard_image
+        img = capture_clipboard_image()
+        if img is None:
+            self.report_info("No image found on clipboard.")
+            return
+        self._input.pending_images.append(img)
+        self._safe_render()
+
+    def _try_load_image_from_path(self, path: str) -> None:
+        """Load an image file from disk and queue it as a pending image."""
+        import base64
+        import os
+        from avoid_agent.tui.clipboard import ClipboardImage, format_size
+
+        expanded = os.path.expanduser(path.strip())
+        if not os.path.isfile(expanded):
+            self.report_info(f"Image file not found: {expanded}")
+            return
+
+        ext = os.path.splitext(expanded)[1].lower()
+        media_type_map = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+        }
+        media_type = media_type_map.get(ext)
+        if media_type is None:
+            self.report_info(
+                f"Unsupported image type '{ext}'. Supported: png, jpg, jpeg, gif, webp"
+            )
+            return
+
+        try:
+            with open(expanded, "rb") as f:
+                raw = f.read()
+        except OSError as e:
+            self.report_info(f"Could not read image: {e}")
+            return
+
+        if not raw:
+            self.report_info(f"Image file is empty: {expanded}")
+            return
+
+        img = ClipboardImage(
+            data=base64.standard_b64encode(raw).decode("ascii"),
+            media_type=media_type,
+            size_bytes=len(raw),
+        )
+        self._input.pending_images.append(img)
+        self.report_info(f"Image loaded: {os.path.basename(expanded)} ({format_size(len(raw))})")
+        self._safe_render()
 
 
     def pick_from_list(self, title: str, options: list[str]) -> str | None:

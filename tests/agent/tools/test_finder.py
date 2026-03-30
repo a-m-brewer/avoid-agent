@@ -26,11 +26,19 @@ class TestFindAvailableTools:
     def test_read_file_schema_is_correct(self):
         tools = find_available_tools()
         read_file_tool = next(t for t in tools if t.name == "read_file")
-        assert read_file_tool.description == "Read the contents of a file at the given path."
-        assert len(read_file_tool.parameters) == 1
+        assert read_file_tool.description == (
+            "Read a file. For large files, prefer partial reads with start_line and limit."
+        )
+        assert len(read_file_tool.parameters) == 3
         assert read_file_tool.parameters[0].name == "path"
         assert read_file_tool.parameters[0].type == ParameterType.STR
         assert read_file_tool.parameters[0].required is True
+        assert read_file_tool.parameters[1].name == "start_line"
+        assert read_file_tool.parameters[1].type == ParameterType.INT
+        assert read_file_tool.parameters[1].required is False
+        assert read_file_tool.parameters[2].name == "limit"
+        assert read_file_tool.parameters[2].type == ParameterType.INT
+        assert read_file_tool.parameters[2].required is False
 
     def test_loads_tools_from_directory(self, tmp_path):
         baseline_tools = find_available_tools()

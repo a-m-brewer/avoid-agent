@@ -362,6 +362,7 @@ class AssistantMessage(Message):
     timestamp: int = field(default_factory=_now_ms)
     usage: Usage = field(default_factory=Usage)
     error_message: str | None = None
+    provider_state: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.content:
@@ -489,6 +490,7 @@ class Provider(metaclass=ABCMeta):
             effort if effort in ("low", "medium", "high") else "high"
         )
         self.supports_thinking: bool = True
+        self.supports_vision: bool = True
 
     @abstractmethod
     def stream(
@@ -498,6 +500,15 @@ class Provider(metaclass=ABCMeta):
         tool_choice: ToolChoice = "auto",
     ) -> ProviderStream:
         """Sends messages to the provider and returns a stream of responses."""
+
+    def request_metrics(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition],
+        tool_choice: ToolChoice = "auto",
+    ) -> dict:
+        """Return provider-specific request sizing/debug information."""
+        return {}
 
 
 def normalize_messages(messages: list[Message]) -> list[Message]:
@@ -636,6 +647,7 @@ def get_provider(
             effort=effort,
         )
         provider.supports_thinking = False
+        provider.supports_vision = False
         return provider
 
     if provider_name == "anthropic":

@@ -3,7 +3,9 @@
 import json
 from urllib.request import Request
 
+from avoid_agent.providers import AssistantMessage, ProviderToolCall, ToolResultMessage, UserMessage
 from avoid_agent.providers.openai_codex import CodexStream
+from avoid_agent.providers.openai_codex import OpenAICodexProvider
 
 
 class FakeHTTPResponse:
@@ -125,3 +127,69 @@ def test_codex_stream_recovers_missing_text_suffix_from_final_message_item(monke
     streamed_text = "".join(event.text or "" for event in events if event.type == "text_delta")
     assert streamed_text == json_text
     assert final.message.text == json_text
+
+
+def test_codex_stream_captures_response_id_from_completed_event(monkeypatch):
+    sse = "\n\n".join(
+        [
+            'data: {"type":"response.output_item.added","item":{"type":"message","id":"msg_1"}}',
+            'data: {"type":"response.output_text.delta","delta":"hi"}',
+            'data: {"type":"response.completed","response":{"id":"resp_123","status":"completed","usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8},"output":[{"type":"message","id":"msg_1","content":[{"type":"output_text","text":"hi"}]}]}}',
+            "",
+        ]
+    ).encode()
+
+    monkeypatch.setattr(
+        "avoid_agent.providers.openai_codex.urlopen",
+        lambda request, timeout: FakeHTTPResponse(sse),
+    )
+
+    with CodexStream(lambda: Request("https://example.com")) as stream:
+        list(stream.event_stream())
+        final = stream.get_final_message()
+
+    assert final.message.provider_state["response_id"] == "resp_123"
+
+
+def test_codex_provider_builds_delta_request_from_previous_response_id():
+    provider = OpenAICodexProvider(
+        system="sys",
+        model="codex-mini-latest",
+        max_tokens=1024,
+        credentials={"access": "token", "account_id": "acct"},
+    )
+    messages = [
+        UserMessage(text="first"),
+        AssistantMessage(
+            text="working",
+            tool_calls=[ProviderToolCall(id="call_1", name="read_file", arguments={"path": "x"})],
+            stop_reason="tool_use",
+            provider_state={"response_id": "resp_prev"},
+        ),
+        ToolResultMessage(tool_call_id="call_1", tool_name="read_file", content="hello"),
+        UserMessage(text="continue"),
+    ]
+
+    body = provider._build_body(messages, tools=[], tool_choice="auto")
+
+    assert body["store"] is True
+    assert body["previous_response_id"] == "resp_prev"
+    assert body["input"] == [
+        {"type": "function_call_output", "call_id": "call_1", "output": "hello"},
+        {"role": "user", "content": "continue"},
+    ]
+
+
+def test_codex_provider_falls_back_to_full_input_without_response_id():
+    provider = OpenAICodexProvider(
+        system="sys",
+        model="codex-mini-latest",
+        max_tokens=1024,
+        credentials={"access": "token", "account_id": "acct"},
+    )
+    messages = [UserMessage(text="first")]
+
+    body = provider._build_body(messages, tools=[], tool_choice="auto")
+
+    assert "previous_response_id" not in body
+    assert body["input"] == [{"role": "user", "content": "first"}]

@@ -2,6 +2,7 @@
 
 import inspect
 import typing
+import types
 
 from avoid_agent.agent.tools import TYPE_MAP, ParamDefinition, ParameterType, ToolDefinition
 
@@ -34,9 +35,19 @@ def generate_tool_schema(tool_func) -> ToolDefinition:
         if name == 'return':
             continue
 
+        actual_type = None
+        description = None
+
         if typing.get_origin(hint) is typing.Annotated:
             actual_type, description = typing.get_args(hint)
         else:
+            origin = typing.get_origin(hint)
+            if origin in (typing.Union, types.UnionType):
+                non_none_args = [arg for arg in typing.get_args(hint) if arg is not type(None)]
+                if len(non_none_args) == 1 and typing.get_origin(non_none_args[0]) is typing.Annotated:
+                    actual_type, description = typing.get_args(non_none_args[0])
+
+        if actual_type is None or description is None:
             raise MissingTypeAnnotationException(
                 f"Parameter '{name}' is missing an Annotated type hint with a description.")
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
+from pathlib import Path
 import re
 import threading
 from typing import Callable
@@ -27,6 +29,9 @@ class TurnCancelledError(Exception):
 
 
 MAX_INVALID_STEP_RETRIES = 2
+_TOOL_ARTIFACT_THRESHOLD_CHARS = 3000
+_TOOL_RESULT_BACKPRESSURE_CHARS = 2000
+_READ_RESULT_BACKPRESSURE_CHARS = 1200
 _SUCCESS_WITHOUT_EVIDENCE_RE = re.compile(
     r"\b(done|implemented|fixed|completed)\b",
     re.IGNORECASE,
@@ -232,6 +237,132 @@ def _display_text_for_structured_action(structured: StructuredAction) -> str:
     return structured.plan
 
 
+def _tool_result_replay_content(message: ToolResultMessage) -> str:
+    proof = message.details.get("proof", {})
+    limit = _READ_RESULT_BACKPRESSURE_CHARS if proof.get("kind") == "file_read" else _TOOL_RESULT_BACKPRESSURE_CHARS
+    if message.is_error or len(message.content) <= limit:
+        return message.content
+
+    verification = message.details.get("verification", {})
+    preview = _preview(message.content, limit=400)
+    tool_name = message.tool_name or message.details.get("action", {}).get("tool") or "tool"
+
+    if proof.get("kind") == "file_read":
+        path = proof.get("path", "unknown")
+        start_line = proof.get("start_line")
+        end_line = proof.get("end_line")
+        total_lines = proof.get("total_lines")
+        chars = proof.get("chars", len(message.content))
+        line_range = f"lines {start_line}-{end_line}"
+        if isinstance(total_lines, int) and total_lines > 0:
+            line_range += f" of {total_lines}"
+        artifact = message.details.get("artifact", {})
+        artifact_hint = ""
+        if artifact.get("path"):
+            artifact_hint = f" Artifact: {artifact['path']}."
+        return (
+            f"Read {path} ({line_range}, {chars} chars). Full content suppressed for replay; "
+            f"use read_file again if exact text is needed.{artifact_hint}\nPreview:\n{preview}"
+        )
+
+    status = verification.get("status", "unknown")
+    artifact = message.details.get("artifact", {})
+    artifact_hint = f" Artifact: {artifact['path']}." if artifact.get("path") else ""
+    return (
+        f"{tool_name} result ({status}). Full output suppressed for replay; re-run the tool if exact "
+        f"content is needed.{artifact_hint}\nPreview:\n{preview}"
+    )
+
+
+def _compress_tool_results_for_replay(messages: list[Message]) -> list[Message]:
+    trailing_tool_result_index = len(messages)
+    while (
+        trailing_tool_result_index > 0
+        and isinstance(messages[trailing_tool_result_index - 1], ToolResultMessage)
+    ):
+        trailing_tool_result_index -= 1
+
+    replay_messages: list[Message] = []
+    for idx, message in enumerate(messages):
+        if not isinstance(message, ToolResultMessage):
+            replay_messages.append(message)
+            continue
+
+        # Preserve the most recent tool-result batch verbatim so the model can
+        # inspect fresh tool outputs before deciding the next step.
+        if idx >= trailing_tool_result_index:
+            replay_messages.append(message)
+            continue
+
+        replay_content = _tool_result_replay_content(message)
+        if replay_content == message.content:
+            replay_messages.append(message)
+            continue
+
+        replay_details = dict(message.details)
+        replay_details["replay_backpressure"] = {
+            "applied": True,
+            "original_chars": len(message.content),
+            "replay_chars": len(replay_content),
+        }
+        replay_messages.append(
+            ToolResultMessage(
+                tool_call_id=message.tool_call_id,
+                content=replay_content,
+                tool_name=message.tool_name,
+                is_error=message.is_error,
+                timestamp=message.timestamp,
+                details=replay_details,
+            )
+        )
+
+    return replay_messages
+
+
+def _estimate_message_chars(messages: list[Message]) -> int:
+    total = 0
+    for message in messages:
+        if isinstance(message, UserMessage):
+            total += len(message.text)
+        elif isinstance(message, AssistantMessage):
+            if message.text:
+                total += len(message.text)
+            if message.tool_calls:
+                total += len(json.dumps([tc.arguments for tc in message.tool_calls], sort_keys=True))
+        elif isinstance(message, ToolResultMessage):
+            total += len(message.content)
+    return total
+
+
+def _tool_result_chars(messages: list[Message]) -> int:
+    return sum(
+        len(message.content)
+        for message in messages
+        if isinstance(message, ToolResultMessage)
+    )
+
+
+def _artifacts_dir() -> Path:
+    return Path.home() / ".avoid-agent" / "artifacts"
+
+
+def _store_tool_artifact(tool_call: ProviderToolCall, content: str) -> dict | None:
+    if len(content) <= _TOOL_ARTIFACT_THRESHOLD_CHARS:
+        return None
+
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    path = _artifacts_dir() / f"{tool_call.name}-{digest[:16]}.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(content, encoding="utf-8")
+    return {
+        "kind": "tool_output_artifact",
+        "path": str(path),
+        "sha256": digest,
+        "chars": len(content),
+    }
+
+
 class ExecutionController:
     """Validates tool proposals, executes them, and emits verifiable results."""
 
@@ -277,18 +408,22 @@ class ExecutionController:
         tool_run = run_tool(tool_call.name, tool_call.arguments)
         proof = self._extract_proof(tool_call, tool_run)
         verification = self._verify(tool_call, tool_run, proof)
+        artifact = _store_tool_artifact(tool_call, tool_run.content)
         is_error = _tool_result_is_error(tool_run.content) or verification["status"] != "verified"
+        details = {
+            "plan": plan or f"Execute {tool_call.name}",
+            "action": {"tool": tool_call.name, "args": tool_call.arguments},
+            "proof": proof,
+            "verification": verification,
+        }
+        if artifact is not None:
+            details["artifact"] = artifact
         return ToolResultMessage(
             tool_call_id=tool_call.id,
             tool_name=tool_call.name,
             content=tool_run.content,
             is_error=is_error,
-            details={
-                "plan": plan or f"Execute {tool_call.name}",
-                "action": {"tool": tool_call.name, "args": tool_call.arguments},
-                "proof": proof,
-                "verification": verification,
-            },
+            details=details,
         )
 
     def extract_plan(self, message: AssistantMessage) -> str:
@@ -519,6 +654,18 @@ class ExecutionController:
                     "status": "failed",
                     "message": "Missing file-read proof for read_file.",
                 }
+            start_line = proof.get("start_line")
+            end_line = proof.get("end_line")
+            total_lines = proof.get("total_lines")
+            if (
+                not isinstance(start_line, int)
+                or not isinstance(end_line, int)
+                or not isinstance(total_lines, int)
+            ):
+                return {
+                    "status": "failed",
+                    "message": "read_file proof is missing line-range metadata.",
+                }
             return {
                 "status": "verified",
                 "message": f"Read {proof['path']} and captured file contents.",
@@ -555,6 +702,11 @@ class ExecutionController:
                 return {
                     "status": "failed",
                     "message": "edit_file reported success but did not change the file.",
+                }
+            if proof.get("edit_mode") not in {"string", "line_range"}:
+                return {
+                    "status": "failed",
+                    "message": "edit_file proof is missing the edit mode.",
                 }
             return {
                 "status": "verified",
@@ -639,6 +791,7 @@ class AgentRuntime:
         messages: list[Message],
         text: str,
         cancel_token: threading.Event | None = None,
+        images: list | None = None,
     ) -> RunTurnResult:
         """Execute one user turn, optionally supporting mid-turn cancellation.
 
@@ -648,8 +801,15 @@ class AgentRuntime:
             cancel_token: Optional threading.Event.  When the event is set the
                 loop exits at the next safe checkpoint (between provider calls
                 or between tool executions) and raises TurnCancelledError.
+            images: Optional list of ImageBlock objects to attach to the message.
         """
-        run_messages = [*messages, UserMessage(text=text)]
+        from avoid_agent.providers import ImageBlock
+        image_blocks: list[ImageBlock] = [
+            ImageBlock(data=img.data, media_type=img.media_type)
+            for img in (images or [])
+            if hasattr(img, "data") and hasattr(img, "media_type")
+        ]
+        run_messages = [*messages, UserMessage(text=text, images=image_blocks)]
         turn_start = len(messages)
         input_tokens = 0
         invalid_step_retries = 0
@@ -662,6 +822,50 @@ class AgentRuntime:
         while True:
             _check_cancel()
             context_messages = self._prepare_messages(run_messages, turn_start, text)
+            context_tokens = self._estimate_tokens(context_messages)
+            context_chars = _estimate_message_chars(context_messages)
+            replay_tool_chars = _tool_result_chars(context_messages)
+            provider_metrics = self._provider.request_metrics(
+                context_messages,
+                self._tool_definitions,
+                self._tool_choice,
+            )
+            self._emit(
+                RuntimeEvent(
+                    type="provider_event",
+                    provider_event=ProviderEvent(
+                        type="status",
+                        status=(
+                            "Provider request: "
+                            f"{len(context_messages)} msgs, "
+                            f"~{context_tokens} tokens, "
+                            f"{context_chars} chars, "
+                            f"{replay_tool_chars} tool-result chars"
+                        ),
+                    ),
+                )
+            )
+            if provider_metrics:
+                metrics_bits = [
+                    f"provider={provider_metrics.get('provider', 'unknown')}",
+                ]
+                if provider_metrics.get("wire_chars") is not None:
+                    metrics_bits.append(f"wire_chars={provider_metrics['wire_chars']}")
+                if provider_metrics.get("cache_breakpoints") is not None:
+                    metrics_bits.append(
+                        f"cache_breakpoints={provider_metrics['cache_breakpoints']}"
+                    )
+                if provider_metrics.get("messages") is not None:
+                    metrics_bits.append(f"provider_messages={provider_metrics['messages']}")
+                self._emit(
+                    RuntimeEvent(
+                        type="provider_event",
+                        provider_event=ProviderEvent(
+                            type="status",
+                            status="Provider metrics: " + ", ".join(metrics_bits),
+                        ),
+                    )
+                )
             with self._provider.stream(
                 messages=context_messages,
                 tools=self._tool_definitions,
@@ -673,6 +877,25 @@ class AgentRuntime:
                 response = stream.get_final_message()
 
             input_tokens = response.input_tokens
+            usage = response.message.usage
+            if usage.input_tokens or usage.output_tokens:
+                usage_bits = [
+                    f"Usage: in {usage.input_tokens}",
+                    f"out {usage.output_tokens}",
+                ]
+                if usage.cache_read_input_tokens:
+                    usage_bits.append(f"cache-read {usage.cache_read_input_tokens}")
+                if usage.cache_creation_input_tokens:
+                    usage_bits.append(f"cache-write {usage.cache_creation_input_tokens}")
+                self._emit(
+                    RuntimeEvent(
+                        type="provider_event",
+                        provider_event=ProviderEvent(
+                            type="status",
+                            status=", ".join(usage_bits),
+                        ),
+                    )
+                )
             run_messages.append(response.message)
 
             if response.message.stop_reason in ("error", "aborted"):
@@ -758,24 +981,26 @@ class AgentRuntime:
         user_request: str,
     ) -> list[Message]:
         """Apply context management and append grounded controller state."""
+        replay_messages = _compress_tool_results_for_replay(messages)
+
         # Check hysteresis: don't compact if we compacted recently unless way over budget
         turns_since_compaction = self._turn_count - self._last_compaction_turn
         over_budget_threshold = 1.10  # Only force compaction if 10% over budget
 
         if self._context_strategy in ("compact", "compact+window"):
             # Check if we're over budget enough to warrant immediate compaction
-            estimated = self._estimate_tokens(messages)
+            estimated = self._estimate_tokens(replay_messages)
             if estimated <= self._token_budget * over_budget_threshold:
                 # Within hysteresis window - skip compaction
                 if turns_since_compaction < self._compaction_cooldown_turns:
-                    grounded_messages = list(messages)
+                    grounded_messages = list(replay_messages)
                     grounded_messages.append(
                         self._controller.build_state_message(messages, turn_start, user_request)
                     )
                     return grounded_messages
 
         result: ContextResult = prepare_context(
-            messages=messages,
+            messages=replay_messages,
             token_budget=self._token_budget,
             strategy=self._context_strategy,
             summarize=self._summarize,

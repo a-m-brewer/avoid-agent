@@ -17,6 +17,7 @@ from avoid_agent.providers import (
 
 _SESSIONS_DIR = Path.home() / ".avoid-agent" / "sessions"
 _SESSION_VERSION = 2
+_SESSION_TOOL_RESULT_INLINE_LIMIT = 2000
 
 
 def _cwd_key(cwd: str) -> str:
@@ -111,16 +112,27 @@ def _serialize(msg: Message) -> dict:
                 "total_tokens": msg.usage.total_tokens,
             },
             "error_message": msg.error_message,
+            "provider_state": msg.provider_state,
         }
     if isinstance(msg, ToolResultMessage):
+        content = msg.content
+        artifact = msg.details.get("artifact") if isinstance(msg.details, dict) else None
+        stored_externally = False
+        if isinstance(artifact, dict) and artifact.get("path") and len(content) > _SESSION_TOOL_RESULT_INLINE_LIMIT:
+            content = (
+                f"[tool result stored in artifact] {artifact['path']} "
+                f"({artifact.get('chars', len(msg.content))} chars)"
+            )
+            stored_externally = True
         return {
             "type": "tool_result",
             "tool_call_id": msg.tool_call_id,
-            "content": msg.content,
+            "content": content,
             "tool_name": msg.tool_name,
             "is_error": msg.is_error,
             "timestamp": msg.timestamp,
             "details": msg.details,
+            "stored_externally": stored_externally,
         }
     raise ValueError(f"Unknown message type: {type(msg)}")
 
@@ -158,15 +170,26 @@ def _deserialize(data: dict) -> Message:
                 total_tokens=data.get("usage", {}).get("total_tokens", 0),
             ),
             error_message=data.get("error_message"),
+            provider_state=data.get("provider_state", {}),
         )
     if t == "tool_result":
+        details = data.get("details", {})
+        content = data["content"]
+        if data.get("stored_externally") and isinstance(details, dict):
+            artifact = details.get("artifact", {})
+            artifact_path = artifact.get("path") if isinstance(artifact, dict) else None
+            if artifact_path:
+                try:
+                    content = Path(artifact_path).read_text(encoding="utf-8")
+                except OSError:
+                    pass
         return ToolResultMessage(
             tool_call_id=data["tool_call_id"],
-            content=data["content"],
+            content=content,
             tool_name=data.get("tool_name"),
             is_error=data.get("is_error", False),
             timestamp=data.get("timestamp", 0),
-            details=data.get("details", {}),
+            details=details,
         )
     raise ValueError(f"Unknown message type: {t}")
 

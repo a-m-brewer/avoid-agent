@@ -13,6 +13,7 @@ class StatusBarComponent:
         self.phase: str | None = None
         self.progress_current: int = 0
         self.progress_total: int = 0
+        self.vision_enabled: bool = True
 
     @staticmethod
     def _progress_bar(current: int, total: int, width: int = 10) -> str:
@@ -34,6 +35,8 @@ class StatusBarComponent:
             extras.append("thinking: on")
         if self.effort:
             extras.append(f"effort: {self.effort}")
+        if not self.vision_enabled:
+            extras.append("no vision")
         extras_text = (" | " + " | ".join(extras)) if extras else ""
 
         left = f" {self.model}{extras_text}"

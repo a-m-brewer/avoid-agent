@@ -29,6 +29,65 @@ def _sha256(text: str) -> str:
     return sha256(text.encode("utf-8")).hexdigest()
 
 
+def _slice_lines(content: str, start_line: int | None, limit: int | None) -> tuple[str, int, int, int, bool]:
+    lines = content.splitlines(keepends=True)
+    total_lines = len(lines)
+
+    if total_lines == 0:
+        if start_line not in (None, 1):
+            raise ValueError("start_line out of range for empty file")
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be >= 1")
+        return "", 1, 0, 0, False
+
+    if start_line is None:
+        start_idx = 0
+    else:
+        if start_line < 1:
+            raise ValueError("start_line must be >= 1")
+        if start_line > total_lines:
+            raise ValueError(f"start_line {start_line} exceeds total lines {total_lines}")
+        start_idx = start_line - 1
+
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be >= 1")
+
+    if limit is None:
+        end_idx = total_lines
+    else:
+        end_idx = min(start_idx + limit, total_lines)
+
+    selected = "".join(lines[start_idx:end_idx])
+    actual_start = start_idx + 1
+    actual_end = end_idx
+    truncated = actual_start != 1 or actual_end != total_lines
+    return selected, actual_start, actual_end, total_lines, truncated
+
+
+def _replace_line_range(
+    content: str,
+    start_line: int,
+    end_line: int,
+    replacement: str,
+) -> tuple[str, int, int, int]:
+    lines = content.splitlines(keepends=True)
+    total_lines = len(lines)
+
+    if start_line < 1 or end_line < 1:
+        raise ValueError("start_line and end_line must be >= 1")
+    if start_line > end_line:
+        raise ValueError("start_line must be <= end_line")
+    if total_lines == 0:
+        raise ValueError("Cannot apply a line-range edit to an empty file")
+    if end_line > total_lines:
+        raise ValueError(f"end_line {end_line} exceeds total lines {total_lines}")
+
+    start_idx = start_line - 1
+    end_idx = end_line
+    updated_lines = [*lines[:start_idx], replacement, *lines[end_idx:]]
+    return "".join(updated_lines), start_line, end_line, total_lines
+
+
 def _diff_preview(path: str, before: str, after: str) -> str:
     diff = "".join(
         unified_diff(
@@ -80,23 +139,36 @@ _discover_extension_tools()
 
 
 @tool
-def read_file(path: Annotated[str, "The path to the file to read"]) -> str:
-    """Read the contents of a file at the given path."""
+def read_file(
+    path: Annotated[str, "The path to the file to read"],
+    start_line: Annotated[int, "Optional 1-based starting line for a partial read."] | None = None,
+    limit: Annotated[int, "Optional maximum number of lines to return."] | None = None,
+) -> str:
+    """Read a file. For large files, prefer partial reads with start_line and limit."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
+        selected, actual_start, actual_end, total_lines, truncated = _slice_lines(
+            content, start_line, limit
+        )
         return ToolRunResult(
-            content=content,
+            content=selected,
             details={
                 "proof": {
                     "kind": "file_read",
                     "path": path,
-                    "sha256": _sha256(content),
-                    "chars": len(content),
-                    "preview": _preview(content),
+                    "sha256": _sha256(selected),
+                    "chars": len(selected),
+                    "total_lines": total_lines,
+                    "start_line": actual_start,
+                    "end_line": actual_end,
+                    "truncated": truncated,
+                    "preview": _preview(selected),
                 }
             },
         )
+    except ValueError as e:
+        return ToolRunResult(content=f"Error: {e}")
     except OSError as e:
         return ToolRunResult(content=f"Error: {e}")
 
@@ -140,24 +212,60 @@ def write_file(
 @tool
 def edit_file(
     path: Annotated[str, "Path to the file."],
-    old_string: Annotated[str, "The exact string to replace. Must be unique in the file."],
-    new_string: Annotated[str, "The string to replace it with."],
+    old_string: Annotated[str, "The exact string to replace. Must be unique in the file."] | None = None,
+    new_string: Annotated[str, "The string to replace it with."] | None = None,
+    start_line: Annotated[int, "Optional 1-based start line for range replacement."] | None = None,
+    end_line: Annotated[int, "Optional 1-based end line for range replacement."] | None = None,
+    replacement: Annotated[str, "Replacement text for range replacement mode."] | None = None,
 ) -> str:
-    """Replace an exact string in a file with new content. Use for surgical edits - read the file first to get the exact string. The old_string must appear exactly once in the file."""
+    """Edit an existing file. Use either exact-string replacement or line-range replacement for surgical edits."""
     try:
         target = Path(path)
         with open(target, "r", encoding="utf-8") as f:
             content = f.read()
 
-        count = content.count(old_string)
-        if count == 0:
-            return ToolRunResult(content=f"Error: old_string not found in {path}")
-        if count > 1:
+        string_mode = old_string is not None or new_string is not None
+        range_mode = start_line is not None or end_line is not None or replacement is not None
+
+        if string_mode and range_mode:
             return ToolRunResult(
-                content=f"Error: old_string appears {count} times - make it more specific"
+                content="Error: edit_file accepts either string replacement or line-range replacement, not both"
+            )
+        if not string_mode and not range_mode:
+            return ToolRunResult(
+                content="Error: edit_file requires either old_string/new_string or start_line/end_line/replacement"
             )
 
-        updated = content.replace(old_string, new_string, 1)
+        edit_mode: str
+        affected_start_line: int | None = None
+        affected_end_line: int | None = None
+
+        if range_mode:
+            if start_line is None or end_line is None or replacement is None:
+                return ToolRunResult(
+                    content="Error: line-range replacement requires start_line, end_line, and replacement"
+                )
+            updated, affected_start_line, affected_end_line, total_lines = _replace_line_range(
+                content, start_line, end_line, replacement
+            )
+            edit_mode = "line_range"
+        else:
+            if old_string is None or new_string is None:
+                return ToolRunResult(
+                    content="Error: string replacement requires old_string and new_string"
+                )
+
+            count = content.count(old_string)
+            if count == 0:
+                return ToolRunResult(content=f"Error: old_string not found in {path}")
+            if count > 1:
+                return ToolRunResult(
+                    content=f"Error: old_string appears {count} times - make it more specific"
+                )
+
+            updated = content.replace(old_string, new_string, 1)
+            total_lines = content.count("\n") + (0 if not content else 1)
+            edit_mode = "string"
         with open(path, "w", encoding="utf-8") as f:
             f.write(updated)
 
@@ -174,11 +282,17 @@ def edit_file(
                     "changed": changed,
                     "before_sha256": _sha256(content),
                     "after_sha256": _sha256(after_content),
+                    "edit_mode": edit_mode,
+                    "total_lines": total_lines,
+                    "start_line": affected_start_line,
+                    "end_line": affected_end_line,
                     "after_preview": _preview(after_content),
                     "diff_preview": _diff_preview(path, content, after_content),
                 }
             },
         )
+    except ValueError as e:
+        return ToolRunResult(content=f"Error: {e}")
     except OSError as e:
         return ToolRunResult(content=f"Error: {e}")
 
