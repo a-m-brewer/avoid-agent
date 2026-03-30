@@ -187,7 +187,7 @@ class AnthropicProvider(Provider):
             self._client = Anthropic(api_key=api_key)
 
     @staticmethod
-    def _add_conversation_cache_control(messages: list[dict]) -> list[dict]:
+    def _add_conversation_cache_control(messages: list[dict], max_breakpoints: int = 3) -> list[dict]:
         """Add a few cache-control breakpoints across recent conversation turns.
 
         Anthropic prompt caching works on prefix breakpoints. Marking only the
@@ -200,7 +200,7 @@ class AnthropicProvider(Provider):
 
         breakpoints = 0
         for index in range(len(messages) - 1, -1, -1):
-            if breakpoints >= 3:
+            if breakpoints >= max_breakpoints:
                 break
 
             message = messages[index]
@@ -235,10 +235,6 @@ class AnthropicProvider(Provider):
         tools: list[ToolDefinition],
         tool_choice: ToolChoice = "auto",
     ) -> ProviderStream:
-        provider_messages = self.__get_provider_messages(normalize_messages(messages))
-        provider_messages = self._add_conversation_cache_control(provider_messages)
-        provider_tools = self.__get_provider_tools(tools)
-
         # For OAuth tokens, the system prompt MUST be a structured array with the
         # Claude Code identity as the first block.  This matches what the real
         # Claude Code client sends and is required for higher-tier model access.
@@ -251,6 +247,17 @@ class AnthropicProvider(Provider):
             system_param = [
                 {"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}},
             ]
+
+        conversation_cache_budget = max(
+            0,
+            4 - sum(1 for block in system_param if isinstance(block, dict) and block.get("cache_control")),
+        )
+        provider_messages = self.__get_provider_messages(normalize_messages(messages))
+        provider_messages = self._add_conversation_cache_control(
+            provider_messages,
+            max_breakpoints=conversation_cache_budget,
+        )
+        provider_tools = self.__get_provider_tools(tools)
 
         kwargs: dict = {
             "model": self.model,
@@ -283,10 +290,6 @@ class AnthropicProvider(Provider):
         tools: list[ToolDefinition],
         tool_choice: ToolChoice = "auto",
     ) -> dict:
-        provider_messages = self.__get_provider_messages(normalize_messages(messages))
-        provider_messages = self._add_conversation_cache_control(provider_messages)
-        provider_tools = self.__get_provider_tools(tools)
-
         if self._oauth:
             system_param: str | list[dict] = [
                 {"type": "text", "text": _CC_IDENTITY, "cache_control": {"type": "ephemeral"}},
@@ -296,6 +299,17 @@ class AnthropicProvider(Provider):
             system_param = [
                 {"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}},
             ]
+
+        conversation_cache_budget = max(
+            0,
+            4 - sum(1 for block in system_param if isinstance(block, dict) and block.get("cache_control")),
+        )
+        provider_messages = self.__get_provider_messages(normalize_messages(messages))
+        provider_messages = self._add_conversation_cache_control(
+            provider_messages,
+            max_breakpoints=conversation_cache_budget,
+        )
+        provider_tools = self.__get_provider_tools(tools)
 
         kwargs: dict = {
             "model": self.model,

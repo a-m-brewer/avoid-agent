@@ -100,6 +100,7 @@ def test_self_improve_no_items_reports_info(monkeypatch) -> None:
         def set_thinking_enabled(self, *a): pass
         def set_effort(self, *a): pass
         def set_warning(self, *a): pass
+        def set_vision_enabled(self, *a): pass
         def push_item(self, *a): pass
         def run(self):
             self.on_submit("/self-improve")
@@ -148,6 +149,7 @@ def test_self_improve_reports_next_task(monkeypatch) -> None:
         def set_thinking_enabled(self, *a): pass
         def set_effort(self, *a): pass
         def set_warning(self, *a): pass
+        def set_vision_enabled(self, *a): pass
         def push_item(self, *a): pass
         def run(self):
             self.on_submit("/self-improve")
@@ -197,6 +199,7 @@ def test_self_improve_restart_reports_success(monkeypatch) -> None:
         def set_thinking_enabled(self, *a): pass
         def set_effort(self, *a): pass
         def set_warning(self, *a): pass
+        def set_vision_enabled(self, *a): pass
         def push_item(self, *a): pass
         def run(self):
             self.on_submit("/self-improve")
@@ -246,6 +249,7 @@ def test_self_improve_failed_reports_error(monkeypatch) -> None:
         def set_thinking_enabled(self, *a): pass
         def set_effort(self, *a): pass
         def set_warning(self, *a): pass
+        def set_vision_enabled(self, *a): pass
         def push_item(self, *a): pass
         def run(self):
             self.on_submit("/self-improve")

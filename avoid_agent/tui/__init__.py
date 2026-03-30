@@ -565,6 +565,7 @@ class TUI:
                 lines.append("")
             lines.append(border)
             lines.append(title)
+            search_line_index = len(lines)
             lines.append(f"Search: {query}")
             lines.append("(type to filter, ↑/↓ to move, Enter to select, Esc/Ctrl+C to cancel)")
             preview = filtered[view_offset:view_offset + window_size]
@@ -578,8 +579,21 @@ class TUI:
                 lines.append("(no matches)")
             lines.append(border)
 
+            if self._renderer.has_content:
+                self._terminal.write("\x1b8")
             self._terminal.hide_cursor()
             self._renderer.render(lines)
+            self._terminal.write("\x1b7")
+
+            rows_up = self._renderer.physical_rows(lines)
+            self._terminal.move_up(rows_up)
+            self._terminal.write("\r")
+
+            search_prefix = "Search: "
+            rows_to_search = self._renderer.physical_rows(lines[:search_line_index])
+            if rows_to_search > 0:
+                self._terminal.write(f"\x1b[{rows_to_search}B")
+            self._terminal.write(f"\x1b[{len(search_prefix) + len(query)}C")
             self._terminal.show_cursor()
 
             data, key = self._read_parsed_key()

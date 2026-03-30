@@ -52,7 +52,7 @@ def test_plain_exit_words_are_submitted_as_messages(text: str) -> None:
 
     with patch("avoid_agent.tui.Terminal", return_value=_FakeTerminal()), \
          patch("avoid_agent.tui.Renderer", _FakeRenderer):
-        tui = TUI(on_submit=submitted.append, model="test")
+        tui = TUI(on_submit=lambda t, _imgs=None: submitted.append(t), model="test")
 
     tui._start_spinner = lambda: None
     tui._stop_spinner = lambda: None

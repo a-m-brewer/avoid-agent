@@ -11,6 +11,7 @@ class _FakeTerminal:
 
     def __init__(self, keys: list[bytes] | None = None) -> None:
         self._keys = keys or []
+        self.writes: list[str] = []
 
     def start(self) -> None:
         return None
@@ -25,6 +26,7 @@ class _FakeTerminal:
         return None
 
     def write(self, _text: str) -> None:
+        self.writes.append(_text)
         return None
 
     def move_up(self, _rows: int) -> None:
@@ -78,3 +80,20 @@ def test_picker_does_not_append_to_conversation_on_navigation() -> None:
 
     assert selected == "anthropic/claude"
     assert tui._conversation.items == []
+
+
+def test_picker_positions_cursor_in_search_and_uses_saved_render_anchor() -> None:
+    keys = [b"g", b"\x03"]
+    terminal = _FakeTerminal(keys=keys)
+
+    with patch("avoid_agent.tui.Terminal", return_value=terminal), \
+         patch("avoid_agent.tui.Renderer", _FakeRenderer):
+        tui = TUI(on_submit=lambda _text: None, model="anthropic/old")
+        selected = tui.pick_from_list("Select model", ["anthropic/claude", "openai/gpt-5"])
+
+    assert selected is None
+    assert "\x1b7" in terminal.writes
+    assert "\x1b8" in terminal.writes
+    assert "\x1b[2B" in terminal.writes
+    assert "\x1b[8C" in terminal.writes
+    assert "\x1b[9C" in terminal.writes

@@ -57,6 +57,17 @@ _XTERM_MOD_ENTER_RE = re.compile(r"^\x1b\[27;(\d+);13~$")
 _CSI_MOD_ENTER_Z_RE = re.compile(r"^\x1b\[13;(\d+)z$")
 _CSI_MOD_ENTER_M_RE = re.compile(r"^\x1b\[13;(\d+)M$")
 
+# modifyOtherKeys / xterm modifier sequences for arrow keys:
+# \x1b[1;<mod>A  up, \x1b[1;<mod>B  down, \x1b[1;<mod>C  right, \x1b[1;<mod>D  left
+_CSI_MOD_ARROW_RE = re.compile(r"^\x1b\[1;(\d+)([ABCD])$")
+
+_ARROW_LETTER_TO_NAME: dict[str, str] = {
+    "A": "up",
+    "B": "down",
+    "C": "right",
+    "D": "left",
+}
+
 
 def _mod_code_to_prefix(code: int) -> str:
     """Translate xterm/kitty modifier code to key prefix.
@@ -109,6 +120,21 @@ def parse_key(data: bytes) -> str:
     modified_enter = _parse_modified_enter(data)
     if modified_enter is not None:
         return modified_enter
+
+    # Handle modifyOtherKeys / xterm modifier arrow key sequences (\x1b[1;<mod>A etc.)
+    try:
+        text = data.decode("utf-8")
+        arrow_match = _CSI_MOD_ARROW_RE.match(text)
+        if arrow_match:
+            mod_code = int(arrow_match.group(1))
+            letter = arrow_match.group(2)
+            base_name = _ARROW_LETTER_TO_NAME[letter]
+            if mod_code <= 1:
+                return base_name
+            prefix = _mod_code_to_prefix(mod_code)
+            return f"{prefix}+{base_name}" if prefix else base_name
+    except UnicodeDecodeError:
+        pass
 
     if data in CTRL_KEYS:
         return CTRL_KEYS[data]

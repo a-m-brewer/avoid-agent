@@ -69,7 +69,7 @@ def _make_tui(on_submit) -> TUI:
 
 def _slow_submit(unblock: threading.Event, calls: list[str]):
     """Factory returning an on_submit that records calls and blocks until unblock."""
-    def _submit(text: str) -> None:
+    def _submit(text: str, images=None) -> None:
         calls.append(text)
         unblock.wait(timeout=5)
     return _submit
@@ -182,7 +182,7 @@ def test_cancel_token_is_set_when_slash_exit_received() -> None:
     unblock = threading.Event()
     token_was_set_immediately: list[bool] = []
 
-    def _submit(text: str) -> None:
+    def _submit(text: str, images=None) -> None:
         unblock.wait(timeout=5)
 
     tui = _make_tui(_submit)
