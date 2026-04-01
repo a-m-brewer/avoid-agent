@@ -49,6 +49,14 @@ AVAILABLE_MODELS: dict[str, list[str]] = {
     "ollama": [
         "devstral-small:latest",
     ],
+    "ollama-remote": [
+        "qwen25-coder-7b:latest",
+        "qwen2.5-coder:7b",
+        "qwen25-coder-14b:latest",
+        "qwen2.5-coder:14b",
+        "qwen3.5:9b",
+        "qwen9b:latest",
+    ],
 }
 
 # Model context window sizes (in tokens). Used to compute dynamic token budgets.
@@ -195,22 +203,29 @@ def _list_dynamic_models() -> list[str]:
         except Exception:  # pylint: disable=broad-except
             pass
 
-    ollama_host = config.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-    try:
-        with urllib.request.urlopen(f"{ollama_host}/api/tags", timeout=2) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        models_payload = payload.get("models") if isinstance(payload, dict) else []
-        models = [
-            name
-            for item in models_payload
-            if isinstance(item, dict)
-            for name in [item.get("name")]
-            if isinstance(name, str) and name.strip()
-        ]
-        if models:
-            providers_to_models["ollama"] = models
-    except Exception:  # pylint: disable=broad-except
-        pass
+    for ollama_provider, ollama_env, ollama_default in [
+        ("ollama", "OLLAMA_HOST", "http://localhost:11434"),
+        ("ollama-remote", "OLLAMA_REMOTE_HOST", None),
+    ]:
+        ollama_host = config.getenv(ollama_env, ollama_default or "")
+        if not ollama_host:
+            continue
+        ollama_host = ollama_host.rstrip("/")
+        try:
+            with urllib.request.urlopen(f"{ollama_host}/api/tags", timeout=2) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            models_payload = payload.get("models") if isinstance(payload, dict) else []
+            models = [
+                name
+                for item in models_payload
+                if isinstance(item, dict)
+                for name in [item.get("name")]
+                if isinstance(name, str) and name.strip()
+            ]
+            if models:
+                providers_to_models[ollama_provider] = models
+        except Exception:  # pylint: disable=broad-except
+            pass
 
     creds = load_credentials()
     if creds:
@@ -632,11 +647,18 @@ def get_provider(
             effort=effort,
         )
 
-    if provider_name == "ollama":
+    if provider_name in ("ollama", "ollama-remote"):
         # pylint: disable=import-outside-toplevel
         from avoid_agent.providers.openai import OpenAIProvider
 
-        base_url = f"{os.getenv('OLLAMA_HOST', 'http://localhost:11434').rstrip('/')}/v1"
+        if provider_name == "ollama-remote":
+            host = os.getenv("OLLAMA_REMOTE_HOST")
+            if not host:
+                raise ValueError("OLLAMA_REMOTE_HOST not set in environment variables.")
+        else:
+            host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
+        base_url = f"{host.rstrip('/')}/v1"
         provider = OpenAIProvider(
             system=system,
             model=model_name,

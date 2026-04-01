@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s --connect-timeout 3 http://10.168.10.17:11434/api/tags)"
+    ]
+  }
+}
